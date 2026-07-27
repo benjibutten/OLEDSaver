@@ -1,0 +1,41 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <UseWPF>true</UseWPF>
+    <!-- WinForms is used for the tray icon (NotifyIcon) and monitor enumeration (Screen). -->
+    <UseWindowsForms>true</UseWindowsForms>
+    <ApplicationIcon>OLEDSaver.ico</ApplicationIcon>
+    <RootNamespace>OLEDSaver</RootNamespace>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <Authors>benjibutten</Authors>
+    <Company>OLEDSaver</Company>
+    <Product>OLED Saver</Product>
+    <Description>True-black screen blanking overlay for OLED displays, toggled by a global hotkey.</Description>
+    <Version Condition="'$(Version)' == ''">1.0.0-local</Version>
+    <AssemblyVersion Condition="'$(AssemblyVersion)' == ''">1.0.0.0</AssemblyVersion>
+    <FileVersion Condition="'$(FileVersion)' == ''">1.0.0.0</FileVersion>
+    <InformationalVersion Condition="'$(InformationalVersion)' == ''">1.0.0-local</InformationalVersion>
+    <!--
+      WFO0003 tells WinForms projects to move DPI settings out of the manifest and
+      into ApplicationHighDpiMode. That advice does not apply here: WinForms is
+      referenced only for NotifyIcon and Screen, the entry point is WPF's, and
+      ApplicationHighDpiMode only takes effect through the generated
+      ApplicationConfiguration.Initialize() that a WPF entry point never calls.
+      The manifest is the only place that works — see app.manifest.
+    -->
+    <NoWarn>$(NoWarn);WFO0003</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="CommunityToolkit.Mvvm" Version="8.4.2" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="OLEDSaver.Tests" />
+  </ItemGroup>
+
+</Project>

@@ -1,0 +1,242 @@
+name: Release
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - src/**
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+
+concurrency:
+  group: release-main
+  cancel-in-progress: true
+
+env:
+  SOLUTION_PATH: OLEDSaver.slnx
+  PROJECT_PATH: src/OLEDSaver/OLEDSaver.csproj
+  RUNTIME_ID: win-x64
+  WINDOWS_CODESIGN_CERT_PFX_BASE64: ${{ secrets.WINDOWS_CODESIGN_CERT_PFX_BASE64 }}
+  WINDOWS_CODESIGN_CERT_PASSWORD: ${{ secrets.WINDOWS_CODESIGN_CERT_PASSWORD }}
+
+jobs:
+  release:
+    if: github.ref == 'refs/heads/main'
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+
+      - name: Setup .NET SDK
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Compute release metadata
+        id: meta
+        shell: pwsh
+        run: |
+          # Date-based version: <year>.<month>.<sequence within the month>,
+          # where the sequence is derived from existing release tags so no
+          # external counter is needed.
+          $now = [DateTime]::UtcNow
+          $tagPrefix = "v$($now.Year).$($now.Month)."
+          $maxSeq = 0
+
+          foreach ($tag in (git tag --list "$tagPrefix*"))
+          {
+            $seq = 0
+            if ([int]::TryParse($tag.Substring($tagPrefix.Length), [ref]$seq) -and $seq -gt $maxSeq)
+            {
+              $maxSeq = $seq
+            }
+          }
+
+          $version = "$($now.Year).$($now.Month).$($maxSeq + 1)"
+          $tagName = "v$version"
+          $assemblyVersion = "$version.0"
+          $releaseName = "OLED Saver $version"
+          $assetName = "OLEDSaver-$version-win-x64.zip"
+
+          "version=$version" >> $env:GITHUB_OUTPUT
+          "tag_name=$tagName" >> $env:GITHUB_OUTPUT
+          "assembly_version=$assemblyVersion" >> $env:GITHUB_OUTPUT
+          "release_name=$releaseName" >> $env:GITHUB_OUTPUT
+          "asset_name=$assetName" >> $env:GITHUB_OUTPUT
+
+      - name: Restore dependencies
+        shell: pwsh
+        run: dotnet restore $env:SOLUTION_PATH -r $env:RUNTIME_ID -p:PublishReadyToRun=true
+
+      - name: Run tests
+        shell: pwsh
+        run: dotnet test $env:SOLUTION_PATH -c Release --no-restore
+
+      - name: Publish app
+        shell: pwsh
+        run: |
+          $publishDir = Join-Path $PWD "artifacts/publish/$env:RUNTIME_ID"
+
+          if (Test-Path $publishDir)
+          {
+            Remove-Item $publishDir -Recurse -Force
+          }
+
+          dotnet publish $env:PROJECT_PATH `
+            -c Release `
+            -r $env:RUNTIME_ID `
+            --no-restore `
+            --self-contained true `
+            -p:ContinuousIntegrationBuild=true `
+            -p:DebugType=None `
+            -p:DebugSymbols=false `
+            -p:PublishSingleFile=true `
+            -p:IncludeNativeLibrariesForSelfExtract=true `
+            -p:EnableCompressionInSingleFile=false `
+            -p:PublishReadyToRun=true `
+            -p:Version=${{ steps.meta.outputs.version }} `
+            -p:AssemblyVersion=${{ steps.meta.outputs.assembly_version }} `
+            -p:FileVersion=${{ steps.meta.outputs.assembly_version }} `
+            -p:InformationalVersion="${{ steps.meta.outputs.version }}+${{ github.sha }}" `
+            -o $publishDir
+
+      - name: Code sign executable when configured
+        id: codesign
+        shell: pwsh
+        run: |
+          $hasCertificate = -not [string]::IsNullOrWhiteSpace($env:WINDOWS_CODESIGN_CERT_PFX_BASE64)
+          $hasPassword = -not [string]::IsNullOrWhiteSpace($env:WINDOWS_CODESIGN_CERT_PASSWORD)
+
+          if ($hasCertificate -ne $hasPassword)
+          {
+            throw "Both WINDOWS_CODESIGN_CERT_PFX_BASE64 and WINDOWS_CODESIGN_CERT_PASSWORD must be configured together."
+          }
+
+          if (-not $hasCertificate)
+          {
+            "status=Unsigned" >> $env:GITHUB_OUTPUT
+            return
+          }
+
+          $certPath = Join-Path $env:RUNNER_TEMP "oledsaver-codesign.pfx"
+          try
+          {
+            [IO.File]::WriteAllBytes($certPath, [Convert]::FromBase64String($env:WINDOWS_CODESIGN_CERT_PFX_BASE64))
+            $exePath = Join-Path $PWD "artifacts/publish/$env:RUNTIME_ID/OLEDSaver.exe"
+            signtool sign `
+              /fd SHA256 `
+              /f $certPath `
+              /p $env:WINDOWS_CODESIGN_CERT_PASSWORD `
+              /tr "http://timestamp.digicert.com" `
+              /td SHA256 `
+              $exePath
+            if ($LASTEXITCODE -ne 0) { throw "signtool sign failed with exit code $LASTEXITCODE." }
+
+            signtool verify /pa /v $exePath
+            if ($LASTEXITCODE -ne 0) { throw "signtool verify failed with exit code $LASTEXITCODE." }
+            "status=Signed (signature verified)" >> $env:GITHUB_OUTPUT
+          }
+          finally
+          {
+            Remove-Item -LiteralPath $certPath -Force -ErrorAction SilentlyContinue
+          }
+
+      - name: Create release zip
+        id: package
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $zipPath = Join-Path $PWD "artifacts/${{ steps.meta.outputs.asset_name }}"
+
+          if (Test-Path $zipPath)
+          {
+            Remove-Item $zipPath -Force
+          }
+
+          Compress-Archive -Path "artifacts/publish/$env:RUNTIME_ID/*" -DestinationPath $zipPath
+
+          $hash = (Get-FileHash -LiteralPath $zipPath -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash  ${{ steps.meta.outputs.asset_name }}" | Set-Content -Path "$zipPath.sha256" -NoNewline
+          "sha256=$hash" >> $env:GITHUB_OUTPUT
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: oledsaver-${{ steps.meta.outputs.version }}-win-x64
+          path: |
+            artifacts/${{ steps.meta.outputs.asset_name }}
+            artifacts/${{ steps.meta.outputs.asset_name }}.sha256
+
+      - name: Attest release archive
+        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
+        with:
+          subject-path: artifacts/${{ steps.meta.outputs.asset_name }}
+
+      - name: Write release notes
+        shell: pwsh
+        run: |
+          $manualNotes = Get-Content -LiteralPath RELEASE_NOTES.md -Raw
+          @"
+          $manualNotes
+
+          ---
+
+          Release metadata
+
+          Tag: ${{ steps.meta.outputs.tag_name }}
+          Build: ${{ steps.meta.outputs.version }}
+          Commit: ${{ github.sha }}
+          Runtime: ${{ env.RUNTIME_ID }}
+          SHA-256: ${{ steps.package.outputs.sha256 }}
+          Code signing: ${{ steps.codesign.outputs.status }}
+
+          For a manual ZIP installation, download the asset below and extract it,
+          then run OLEDSaver.exe. Keep the same install path across updates: the
+          "start with Windows" entry stores the executable path it was enabled with.
+
+          Windows Defender SmartScreen may warn about a newly published or unsigned build.
+          Verify that the archive came from this GitHub release and compare its SHA-256
+          hash with the attached .sha256 file before choosing More info > Run anyway.
+          "@ | Set-Content -Path artifacts/release-notes.md
+
+      - name: Create GitHub release
+        uses: ncipollo/release-action@339a81892b84b4eeb0f6e744e4574d79d0d9b8dd # v1
+        with:
+          tag: ${{ steps.meta.outputs.tag_name }}
+          commit: ${{ github.sha }}
+          name: ${{ steps.meta.outputs.release_name }}
+          bodyFile: artifacts/release-notes.md
+          artifacts: artifacts/${{ steps.meta.outputs.asset_name }},artifacts/${{ steps.meta.outputs.asset_name }}.sha256
+          allowUpdates: false
+          artifactErrorsFailBuild: true
+          replacesArtifacts: true
+          makeLatest: true
+
+      - name: Submit updated manifest to winget-pkgs
+        # The first package version is submitted manually after its release exists.
+        # Once WINGET_TOKEN is configured, later releases open update PRs automatically.
+        env:
+          WINGET_TOKEN: ${{ secrets.WINGET_TOKEN }}
+        shell: pwsh
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:WINGET_TOKEN))
+          {
+            Write-Host "WINGET_TOKEN is not configured; skipping winget submission."
+            return
+          }
+
+          $url = "https://github.com/benjibutten/OLEDSaver/releases/download/${{ steps.meta.outputs.tag_name }}/${{ steps.meta.outputs.asset_name }}"
+          Invoke-WebRequest -Uri "https://aka.ms/wingetcreate/latest" -OutFile "$env:RUNNER_TEMP/wingetcreate.exe"
+          & "$env:RUNNER_TEMP/wingetcreate.exe" update BenjiButten.OLEDSaver `
+            --version ${{ steps.meta.outputs.version }} `
+            --urls "$url" `
+            --submit `
+            --token $env:WINGET_TOKEN

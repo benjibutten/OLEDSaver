@@ -1,0 +1,65 @@
+<!--
+    The blackout surface itself.
+
+    Everything here exists to guarantee #FF000000 across every pixel:
+      * AllowsTransparency stays False. A transparent WPF window is composited
+        per-pixel and forces a software render path; an opaque window with a black
+        background hands the compositor one solid black surface.
+      * No border, no resize grip, no drop shadow, no rounded corners — each of
+        those would light pixels at the edges.
+      * The cursor is hidden, because a mouse pointer is a bright white shape.
+      * The window is sized by SetWindowPos in physical pixels (see
+        NativeInterop.PlaceWindowAtDeviceBounds), so nothing in this file depends
+        on the monitor's scale factor.
+-->
+<Window x:Class="OLEDSaver.Views.BlackoutWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="OLED Saver"
+        WindowStyle="None"
+        AllowsTransparency="False"
+        ResizeMode="NoResize"
+        ShowInTaskbar="False"
+        Topmost="True"
+        WindowStartupLocation="Manual"
+        Background="#FF000000"
+        Cursor="None"
+        UseLayoutRounding="True"
+        SnapsToDevicePixels="True"
+        PreviewKeyDown="Blackout_PreviewKeyDown"
+        PreviewKeyUp="Blackout_PreviewKeyUp"
+        PreviewMouseDown="Blackout_PreviewMouseDown">
+
+    <Grid Background="#FF000000">
+        <!--
+            A dim reminder of how to get back, faded out to nothing. It is the one
+            thing on screen that is not black, which is why it animates to
+            Opacity 0 and stays there: an OLED panel showing a 0-opacity element
+            renders exactly the same pixels as one showing nothing at all.
+        -->
+        <TextBlock x:Name="HintText"
+                   HorizontalAlignment="Center"
+                   VerticalAlignment="Center"
+                   FontFamily="Segoe UI"
+                   FontSize="15"
+                   Foreground="#FF2A2A2A"
+                   TextAlignment="Center"
+                   Opacity="0">
+            <TextBlock.Triggers>
+                <EventTrigger RoutedEvent="FrameworkElement.Loaded">
+                    <BeginStoryboard>
+                        <Storyboard>
+                            <DoubleAnimationUsingKeyFrames Storyboard.TargetProperty="Opacity"
+                                                           FillBehavior="HoldEnd">
+                                <LinearDoubleKeyFrame Value="0" KeyTime="0:0:0"/>
+                                <LinearDoubleKeyFrame Value="1" KeyTime="0:0:0.35"/>
+                                <LinearDoubleKeyFrame Value="1" KeyTime="0:0:2.2"/>
+                                <LinearDoubleKeyFrame Value="0" KeyTime="0:0:3.2"/>
+                            </DoubleAnimationUsingKeyFrames>
+                        </Storyboard>
+                    </BeginStoryboard>
+                </EventTrigger>
+            </TextBlock.Triggers>
+        </TextBlock>
+    </Grid>
+</Window>

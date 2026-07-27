@@ -1,0 +1,335 @@
+<Window x:Class="OLEDSaver.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="OLED Saver"
+        Width="540" Height="780"
+        MinWidth="460" MinHeight="480"
+        WindowStartupLocation="CenterScreen"
+        Background="{StaticResource BackgroundBrush}"
+        WindowStyle="None"
+        AllowsTransparency="False"
+        TextOptions.TextFormattingMode="Display"
+        PreviewKeyDown="MainWindow_PreviewKeyDown">
+
+    <WindowChrome.WindowChrome>
+        <WindowChrome CaptionHeight="32"
+                      ResizeBorderThickness="6"
+                      GlassFrameThickness="0"
+                      CornerRadius="0"
+                      UseAeroCaptionButtons="False"/>
+    </WindowChrome.WindowChrome>
+
+    <Window.Resources>
+        <!-- The record button announces that it is listening; the red tint is the
+             same cue StreamDecky uses for the same job. -->
+        <Style x:Key="RecordButton" TargetType="Button" BasedOn="{StaticResource SecondaryButton}">
+            <Setter Property="Content" Value="Record"/>
+            <Setter Property="MinWidth" Value="132"/>
+            <Style.Triggers>
+                <DataTrigger Binding="{Binding IsRecordingHotkey}" Value="True">
+                    <Setter Property="Content" Value="Press keys…"/>
+                    <Setter Property="Background" Value="#FF5A2727"/>
+                </DataTrigger>
+            </Style.Triggers>
+        </Style>
+    </Window.Resources>
+
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="32"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <!-- Title bar -->
+        <Grid Grid.Row="0" Background="#FF0E0E13">
+            <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="10,0,0,0">
+                <Image Source="{StaticResource AppIcon}" Width="16" Height="16"/>
+                <TextBlock Text="OLED Saver"
+                           Foreground="{StaticResource TextBrush}"
+                           FontSize="12"
+                           FontWeight="SemiBold"
+                           Margin="8,0,0,0"
+                           VerticalAlignment="Center"/>
+                <TextBlock x:Name="VersionText"
+                           Foreground="#FF56566A"
+                           FontSize="11"
+                           Margin="8,1,0,0"
+                           VerticalAlignment="Center"/>
+            </StackPanel>
+
+            <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                <Button Style="{StaticResource TitleBarButton}"
+                        Content="&#xE921;"
+                        ToolTip="Minimize"
+                        Click="MinimizeButton_Click"/>
+                <Button Style="{StaticResource TitleBarButton}"
+                        Content="&#xE8BB;"
+                        ToolTip="Hide to the tray (the app keeps running)"
+                        Click="CloseButton_Click"/>
+            </StackPanel>
+        </Grid>
+
+        <!-- Status / main action -->
+        <Border Grid.Row="1" Margin="16,16,16,4" Style="{StaticResource Card}" Padding="16,14">
+            <StackPanel>
+                <StackPanel Orientation="Horizontal" Margin="0,0,0,12">
+                    <Ellipse Width="8" Height="8" VerticalAlignment="Center" Fill="{StaticResource TealBrush}"/>
+                    <TextBlock Text="{Binding StatusText}"
+                               Foreground="{StaticResource TextBrush}"
+                               FontSize="13"
+                               Margin="8,0,0,0"
+                               VerticalAlignment="Center"/>
+                </StackPanel>
+
+                <Button Style="{StaticResource PrimaryButton}"
+                        Content="{Binding BlackoutButtonText}"
+                        Click="BlackoutNow_Click"/>
+
+                <TextBlock Style="{StaticResource SettingHint}"
+                           Margin="0,10,0,0"
+                           Text="Every pixel is set to #000000, so an OLED panel switches them off entirely — no light, no wear, no burn-in."/>
+            </StackPanel>
+        </Border>
+
+        <ScrollViewer Grid.Row="2"
+                      Margin="16,8,16,0"
+                      VerticalScrollBarVisibility="Auto"
+                      Padding="0,0,6,0">
+            <StackPanel>
+
+                <!-- Hotkey -->
+                <Border Style="{StaticResource Card}">
+                    <StackPanel>
+                        <TextBlock Style="{StaticResource SectionHeader}" Text="HOTKEY"/>
+
+                        <Grid Margin="0,0,0,8">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+
+                            <Border Background="#FF17171F"
+                                    BorderBrush="{StaticResource BorderBrush}"
+                                    BorderThickness="1"
+                                    CornerRadius="6"
+                                    Padding="12,9"
+                                    Margin="0,0,8,0">
+                                <TextBlock Text="{Binding HotkeyDisplayText}"
+                                           Foreground="{StaticResource TextBrush}"
+                                           FontSize="14"
+                                           FontWeight="SemiBold"
+                                           VerticalAlignment="Center"/>
+                            </Border>
+
+                            <Button Grid.Column="1"
+                                    Style="{StaticResource RecordButton}"
+                                    Click="RecordHotkey_Click"/>
+                        </Grid>
+
+                        <TextBlock Style="{StaticResource SettingHint}"
+                                   Margin="0,0,0,0"
+                                   Text="Press any combination with Ctrl, Alt, Shift or Win — Escape cancels. The same combination turns the blackout back off, and it keeps working while a game has focus."/>
+
+                        <TextBlock Text="{Binding HotkeyWarning}"
+                                   Foreground="{StaticResource WarningBrush}"
+                                   FontSize="11"
+                                   TextWrapping="Wrap"
+                                   Margin="0,2,0,0">
+                            <TextBlock.Style>
+                                <Style TargetType="TextBlock">
+                                    <Setter Property="Visibility" Value="Collapsed"/>
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding HasHotkeyWarning}" Value="True">
+                                            <Setter Property="Visibility" Value="Visible"/>
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </TextBlock.Style>
+                        </TextBlock>
+                    </StackPanel>
+                </Border>
+
+                <!-- Displays -->
+                <Border Style="{StaticResource Card}">
+                    <StackPanel>
+                        <TextBlock Style="{StaticResource SectionHeader}" Text="DISPLAYS TO BLANK"/>
+
+                        <RadioButton GroupName="DisplayTarget"
+                                     Content="All displays"
+                                     IsChecked="{Binding IsAllDisplaysMode, Mode=TwoWay}"/>
+                        <RadioButton GroupName="DisplayTarget"
+                                     Content="Primary display only"
+                                     IsChecked="{Binding IsPrimaryOnlyMode, Mode=TwoWay}"/>
+                        <RadioButton GroupName="DisplayTarget"
+                                     Content="Only the displays I tick below"
+                                     IsChecked="{Binding IsSelectedDisplaysMode, Mode=TwoWay}"/>
+
+                        <Border Background="#FF101017"
+                                CornerRadius="6"
+                                Padding="12,10"
+                                Margin="0,10,0,8">
+                            <StackPanel>
+                                <ItemsControl ItemsSource="{Binding Displays}">
+                                    <ItemsControl.ItemTemplate>
+                                        <DataTemplate>
+                                            <CheckBox Content="{Binding Label}"
+                                                      IsChecked="{Binding IsSelected, Mode=TwoWay}"/>
+                                        </DataTemplate>
+                                    </ItemsControl.ItemTemplate>
+                                </ItemsControl>
+
+                                <Button Style="{StaticResource SecondaryButton}"
+                                        Content="Refresh display list"
+                                        HorizontalAlignment="Left"
+                                        Padding="10,6"
+                                        FontSize="12"
+                                        Margin="0,6,0,0"
+                                        Click="RefreshDisplays_Click"/>
+                            </StackPanel>
+                        </Border>
+
+                        <TextBlock Style="{StaticResource SettingHint}"
+                                   Margin="0,0,0,0"
+                                   Text="Ticking a display switches to that mode. Mixed setups are the point here: blank the OLED and leave an LCD alone."/>
+                    </StackPanel>
+                </Border>
+
+                <!-- Coming back -->
+                <Border Style="{StaticResource Card}">
+                    <StackPanel>
+                        <TextBlock Style="{StaticResource SectionHeader}" Text="COMING BACK"/>
+
+                        <CheckBox Content="A key press brings the screen back"
+                                  IsChecked="{Binding DismissOnKeyPress, Mode=TwoWay}"/>
+                        <CheckBox Content="A mouse click brings the screen back"
+                                  IsChecked="{Binding DismissOnMouseClick, Mode=TwoWay}"/>
+                        <CheckBox Content="Moving the mouse brings the screen back"
+                                  IsChecked="{Binding DismissOnMouseMove, Mode=TwoWay}"/>
+                        <TextBlock Style="{StaticResource SettingHint}"
+                                   Margin="28,2,0,10"
+                                   Text="Off by default. A controller mapped to the pointer, a game still holding it, or a sensor on a glossy desk all report movement with nobody touching the mouse — and the blackout would lift a second after every press."/>
+
+                        <TextBlock Foreground="#FFB9B9C6" FontSize="12" Margin="0,10,0,4">
+                            <Run Text="Movement needed:"/>
+                            <Run Text="{Binding MouseMoveThresholdPixels, Mode=OneWay}"/>
+                            <Run Text="px"/>
+                        </TextBlock>
+                        <Slider Minimum="5"
+                                Maximum="400"
+                                TickFrequency="5"
+                                IsSnapToTickEnabled="True"
+                                IsEnabled="{Binding DismissOnMouseMove}"
+                                Value="{Binding MouseMoveThresholdPixels, Mode=TwoWay}"
+                                Margin="0,0,0,4"/>
+                        <TextBlock Style="{StaticResource SettingHint}"
+                                   Text="Raise this if a twitchy mouse or a shiny desk wakes the screen on its own. Escape and the hotkey always work, whatever is ticked here."/>
+
+                        <CheckBox Content="Fade in a reminder of how to get back"
+                                  IsChecked="{Binding ShowHintOnBlackout, Mode=TwoWay}"/>
+                        <TextBlock Style="{StaticResource SettingHint}"
+                                   Text="One dim line, gone after three seconds, and then the screen is entirely black."/>
+                    </StackPanel>
+                </Border>
+
+                <!-- Automatic -->
+                <Border Style="{StaticResource Card}">
+                    <StackPanel>
+                        <TextBlock Style="{StaticResource SectionHeader}" Text="AUTOMATIC BLACKOUT"/>
+
+                        <CheckBox Content="Black out on its own when the PC sits idle"
+                                  IsChecked="{Binding IdleBlackoutEnabled, Mode=TwoWay}"/>
+
+                        <TextBlock Foreground="#FFB9B9C6" FontSize="12" Margin="0,10,0,4">
+                            <Run Text="After"/>
+                            <Run Text="{Binding IdleBlackoutMinutes, Mode=OneWay}"/>
+                            <Run Text="minutes of no keyboard or mouse activity"/>
+                        </TextBlock>
+                        <Slider Minimum="1"
+                                Maximum="240"
+                                TickFrequency="1"
+                                IsSnapToTickEnabled="True"
+                                IsEnabled="{Binding IdleBlackoutEnabled}"
+                                Value="{Binding IdleBlackoutMinutes, Mode=TwoWay}"
+                                Margin="0,0,0,10"/>
+
+                        <CheckBox Content="Never while a full-screen app is in front"
+                                  IsChecked="{Binding SkipIdleBlackoutWhenFullscreen, Mode=TwoWay}"
+                                  IsEnabled="{Binding IdleBlackoutEnabled}"/>
+                        <TextBlock Style="{StaticResource SettingHint}"
+                                   Text="Watching a film produces no input for two hours; this keeps the screen out of the way of that."/>
+                        <TextBlock Style="{StaticResource SettingHint}"
+                                   Margin="0,0,0,0"
+                                   Text="This counts Windows' own idle timer, so anything that reports input keeps it at zero — a controller mapped to the pointer, a drifting mouse, a macro keyboard. On a PC like that this never triggers, and the hotkey is the way to do it. Every blackout is recorded in the log."/>
+                    </StackPanel>
+                </Border>
+
+                <!-- Power -->
+                <Border Style="{StaticResource Card}">
+                    <StackPanel>
+                        <TextBlock Style="{StaticResource SectionHeader}" Text="POWER"/>
+
+                        <CheckBox Content="Keep the displays awake while blacked out"
+                                  IsChecked="{Binding KeepDisplaysAwake, Mode=TwoWay}"/>
+                        <TextBlock Style="{StaticResource SettingHint}"
+                                   Text="Off by default: a black OLED already draws next to nothing, so letting Windows power the panels down normally is fine. Turn it on if your monitors rearrange your windows every time they wake up."/>
+                    </StackPanel>
+                </Border>
+
+                <!-- Startup -->
+                <Border Style="{StaticResource Card}">
+                    <StackPanel>
+                        <TextBlock Style="{StaticResource SectionHeader}" Text="STARTUP"/>
+
+                        <CheckBox Content="Start with Windows"
+                                  IsChecked="{Binding StartWithWindows, Mode=TwoWay}"/>
+                        <TextBlock Style="{StaticResource SettingHint}"
+                                   Margin="0,0,0,0"
+                                   Text="Starts straight into the tray at logon, ready for the hotkey. Registered for your account only, so it needs no administrator rights."/>
+                    </StackPanel>
+                </Border>
+
+                <!-- About -->
+                <Border Style="{StaticResource Card}">
+                    <StackPanel>
+                        <TextBlock Style="{StaticResource SectionHeader}" Text="ABOUT"/>
+                        <TextBlock Style="{StaticResource SettingHint}"
+                                   Margin="0,0,0,8"
+                                   Text="Closing this window keeps OLED Saver running in the tray. Right-click the tray icon to blank the screen or to quit. Another program can blank the screen by launching OLEDSaver.exe with --blackout."/>
+                        <StackPanel Orientation="Horizontal">
+                            <Button Style="{StaticResource SecondaryButton}"
+                                    Content="Open settings folder"
+                                    FontSize="12"
+                                    Padding="10,6"
+                                    Margin="0,0,8,0"
+                                    Click="OpenSettingsFolder_Click"/>
+                            <Button Style="{StaticResource SecondaryButton}"
+                                    Content="Open log"
+                                    FontSize="12"
+                                    Padding="10,6"
+                                    Click="OpenLog_Click"/>
+                        </StackPanel>
+                    </StackPanel>
+                </Border>
+
+            </StackPanel>
+        </ScrollViewer>
+
+        <!-- Footer -->
+        <Border Grid.Row="3" Background="#FF0E0E13" Padding="16,10">
+            <Grid>
+                <TextBlock Text="Runs in the tray"
+                           Foreground="#FF56566A"
+                           FontSize="11"
+                           VerticalAlignment="Center"/>
+                <Button HorizontalAlignment="Right"
+                        Style="{StaticResource SecondaryButton}"
+                        Content="Quit OLED Saver"
+                        FontSize="12"
+                        Padding="12,7"
+                        Click="Quit_Click"/>
+            </Grid>
+        </Border>
+    </Grid>
+</Window>
