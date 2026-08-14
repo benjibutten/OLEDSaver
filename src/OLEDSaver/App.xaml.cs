@@ -1,7 +1,9 @@
 using System.Threading;
+using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Threading;
 using OLEDSaver.Helpers;
+using OLEDSaver.Updates;
 
 using Application = System.Windows.Application;
 
@@ -37,8 +39,31 @@ public partial class App : Application
     private RegisteredWaitHandle? _toggleWaitHandle;
     private bool _ownsSingleInstanceMutex;
 
-    protected override void OnStartup(StartupEventArgs e)
+    protected override async void OnStartup(StartupEventArgs e)
     {
+        // Both update modes run in a copy of the exe in a temp folder, and both must
+        // return before the single-instance mutex below is touched: the app they are
+        // waiting for still owns it.
+        if (UpdateInstaller.IsCleanupMode(e.Args))
+        {
+            base.OnStartup(e);
+            await UpdateInstaller.RunCleanupAsync(e.Args);
+            Shutdown();
+            return;
+        }
+
+        if (UpdateInstaller.IsUpdateMode(e.Args))
+        {
+            base.OnStartup(e);
+            await UpdateInstaller.RunAsync(e.Args);
+            Shutdown();
+            return;
+        }
+
+        // Set when this process is the freshly installed build: the updater's temp
+        // folder is still on disk and nothing else will remove it.
+        UpdateInstaller.ScheduleCleanup(e.Args);
+
         DispatcherUnhandledException += OnDispatcherUnhandledException;
         AppDomain.CurrentDomain.UnhandledException += OnCurrentDomainUnhandledException;
         SessionEnding += OnSessionEnding;
@@ -74,14 +99,58 @@ public partial class App : Application
         MainWindow = mainWindow;
 
         if (startHiddenInTray)
+        {
+            CheckForUpdatesWhenShown(mainWindow);
             mainWindow.StartHiddenInTray();
+        }
         else
+        {
             mainWindow.Show();
+            _ = CheckForUpdatesAfterStartupAsync(mainWindow);
+        }
 
         // Nothing is blacked out yet in a fresh process, so "--toggle" and
         // "--blackout" mean the same thing on the way up.
         if (blackoutOnStart)
             mainWindow.ShowBlackoutFromCommandLine();
+    }
+
+    /// <summary>
+    /// The automatic check, held back until the app has settled. Registering the hotkey
+    /// and syncing the startup entry is what the first seconds after launch are for, and
+    /// an update dialog on top of that is in the way.
+    /// </summary>
+    private static async Task CheckForUpdatesAfterStartupAsync(Window owner)
+    {
+        await Task.Delay(TimeSpan.FromSeconds(8));
+
+        if (owner.Dispatcher.HasShutdownStarted)
+            return;
+
+        // Hidden to the tray in the meantime. A dialog behind a hidden window is one
+        // nobody can answer, so it waits for the window to come back.
+        if (!owner.IsVisible)
+        {
+            CheckForUpdatesWhenShown(owner);
+            return;
+        }
+
+        await UpdateCoordinator.CheckAsync(owner, manual: false);
+    }
+
+    private static void CheckForUpdatesWhenShown(Window owner)
+    {
+        DependencyPropertyChangedEventHandler? visibilityChanged = null;
+        visibilityChanged = (_, _) =>
+        {
+            if (!owner.IsVisible)
+                return;
+
+            owner.IsVisibleChanged -= visibilityChanged;
+            _ = CheckForUpdatesAfterStartupAsync(owner);
+        };
+
+        owner.IsVisibleChanged += visibilityChanged;
     }
 
     protected override void OnExit(ExitEventArgs e)

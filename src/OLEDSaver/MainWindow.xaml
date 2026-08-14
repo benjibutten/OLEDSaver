@@ -308,8 +308,18 @@
                                     Content="Open log"
                                     FontSize="12"
                                     Padding="10,6"
+                                    Margin="0,0,8,0"
                                     Click="OpenLog_Click"/>
+                            <Button Style="{StaticResource SecondaryButton}"
+                                    Content="Check for updates"
+                                    ToolTip="Downloads the update, verifies its SHA-256, installs it and restarts the app."
+                                    FontSize="12"
+                                    Padding="10,6"
+                                    Click="CheckForUpdates_Click"/>
                         </StackPanel>
+                        <TextBlock Style="{StaticResource SettingHint}"
+                                   Margin="0,10,0,0"
+                                   Text="OLED Saver also checks GitHub for a new release shortly after it starts, at most twice a day, and only says something when there is one to install."/>
                     </StackPanel>
                 </Border>
 

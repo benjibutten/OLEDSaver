@@ -152,6 +152,52 @@ public class SettingsStoreTests : IDisposable
         Assert.Equal(AppSettings.CurrentSchemaVersion, settings.SchemaVersion);
     }
 
+    /// <summary>
+    /// The first release wrote no SchemaVersion at all. Reading such a file as if it
+    /// were the current shape skips the v1 → v2 display migration, and the saved
+    /// selection — still GDI slot names — then matches no attached monitor.
+    /// </summary>
+    [Fact]
+    public void A_file_without_a_schema_version_is_read_as_the_first_version()
+    {
+        AppSettings settings = SettingsStore.Deserialize("""
+            { "DisplayTargetMode": "SelectedDisplays", "SelectedDisplayIds": ["\\\\.\\DISPLAY1"] }
+            """);
+
+        Assert.Equal(AppSettings.LegacySchemaVersion, settings.LoadedSchemaVersion);
+        Assert.True(settings.LoadedSchemaVersion < AppSettings.StableDisplayIdSchemaVersion);
+    }
+
+    [Fact]
+    public void A_file_written_by_this_build_is_not_migrated_again()
+    {
+        AppSettings settings = SettingsStore.Deserialize($$"""
+            { "SchemaVersion": {{AppSettings.CurrentSchemaVersion}} }
+            """);
+
+        Assert.Equal(AppSettings.CurrentSchemaVersion, settings.LoadedSchemaVersion);
+    }
+
+    /// <summary>
+    /// The flip side of defaulting the version to v1: a fresh install has nothing to
+    /// migrate, and the file it writes has to say so rather than claiming to be older
+    /// than it is.
+    /// </summary>
+    [Fact]
+    public void A_fresh_install_is_written_with_the_current_schema_version()
+    {
+        Directory.CreateDirectory(_folder);
+        var store = new SettingsStore(_folder);
+
+        AppSettings settings = store.Load();
+        store.EnsureSaved(settings);
+
+        Assert.Equal(AppSettings.CurrentSchemaVersion, settings.SchemaVersion);
+        Assert.Equal(
+            AppSettings.CurrentSchemaVersion,
+            SettingsStore.Deserialize(File.ReadAllText(store.SettingsFilePath)).LoadedSchemaVersion);
+    }
+
     [Fact]
     public void Orphaned_temp_files_are_swept_on_load()
     {

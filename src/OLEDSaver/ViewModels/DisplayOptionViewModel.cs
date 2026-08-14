@@ -18,7 +18,11 @@ public sealed class DisplayOptionViewModel : ObservableObject
 
     public DisplayInfo Display { get; }
 
-    public string Id => Display.Id;
+    /// <summary>
+    /// What a tick is saved under: the monitor, not the GDI slot it currently
+    /// occupies. See <see cref="DisplayInfo.StableId"/>.
+    /// </summary>
+    public string Id => Display.StableId;
 
     public string Label => Display.Label;
 

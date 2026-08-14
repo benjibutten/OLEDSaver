@@ -48,12 +48,25 @@ public sealed class SettingsStore
         return settings;
     }
 
+    /// <summary>
+    /// Default settings, normalized. The normalize is what stamps the current schema
+    /// version: <see cref="AppSettings.SchemaVersion"/> defaults to the pre-versioning
+    /// value so that old files are recognised, and a fresh install must not inherit
+    /// that and have <see cref="EnsureSaved"/> write a brand-new file claiming to be v1.
+    /// </summary>
+    public static AppSettings CreateDefault()
+    {
+        var settings = new AppSettings();
+        settings.Normalize();
+        return settings;
+    }
+
     public AppSettings Load()
     {
         CleanUpOrphanedTempFiles();
 
         if (!File.Exists(_path))
-            return new AppSettings();
+            return CreateDefault();
 
         try
         {
@@ -62,7 +75,7 @@ public sealed class SettingsStore
         catch (Exception ex)
         {
             AppDiagnostics.Warning($"Failed to load '{_path}'. Falling back to default settings.", ex);
-            return new AppSettings();
+            return CreateDefault();
         }
     }
 

@@ -2,6 +2,7 @@ using System.Collections.ObjectModel;
 using System.Runtime.CompilerServices;
 using System.Windows.Threading;
 using CommunityToolkit.Mvvm.ComponentModel;
+using OLEDSaver.Helpers;
 using OLEDSaver.Input;
 using OLEDSaver.Models;
 using OLEDSaver.Services;
@@ -40,6 +41,7 @@ public sealed class MainViewModel : ObservableObject, IBlackoutOptions, IIdleBla
         _saveTimer.Tick += OnSaveTimerTick;
 
         Displays = new ObservableCollection<DisplayOptionViewModel>();
+        MigrateLegacyDisplaySelection();
         RefreshDisplays();
     }
 
@@ -178,11 +180,43 @@ public sealed class MainViewModel : ObservableObject, IBlackoutOptions, IIdleBla
 
         foreach (DisplayInfo display in DisplayService.GetDisplays())
         {
-            bool isSelected = _settings.SelectedDisplayIds.Contains(display.Id, StringComparer.OrdinalIgnoreCase);
+            bool isSelected = _settings.SelectedDisplayIds.Contains(display.StableId, StringComparer.OrdinalIgnoreCase);
             Displays.Add(new DisplayOptionViewModel(display, isSelected, OnDisplaySelectionChanged));
         }
 
         OnPropertyChanged(nameof(Displays));
+    }
+
+    /// <summary>
+    /// Moves a pre-schema-2 selection off GDI slot names and onto the monitors
+    /// themselves; see <see cref="DisplayService.MigrateLegacySelection"/> for why
+    /// the slot names had to go. Runs once, at startup, because it can only read
+    /// the slots as they stand at this moment.
+    /// </summary>
+    private void MigrateLegacyDisplaySelection()
+    {
+        if (_settings.LoadedSchemaVersion >= AppSettings.StableDisplayIdSchemaVersion)
+            return;
+
+        if (_settings.SelectedDisplayIds.Count == 0)
+            return;
+
+        List<string> before = _settings.SelectedDisplayIds;
+
+        _settings.SelectedDisplayIds = DisplayService
+            .MigrateLegacySelection(DisplayService.GetDisplays(), before)
+            .ToList();
+
+        // Dropping the last id leaves the mode describing something the app will
+        // not do — "only the displays I tick" with nothing ticked blanks all of
+        // them — and Normalize is where that correction already lives.
+        _settings.Normalize();
+
+        AppDiagnostics.Info(
+            $"Migrated {before.Count} saved display selection(s) to monitor device paths; "
+            + $"{_settings.SelectedDisplayIds.Count} resolved to an attached monitor.");
+
+        _store.Save(_settings);
     }
 
     private void OnDisplaySelectionChanged(DisplayOptionViewModel option)

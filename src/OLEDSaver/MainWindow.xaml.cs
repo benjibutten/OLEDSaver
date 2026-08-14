@@ -6,6 +6,7 @@ using System.Windows.Interop;
 using OLEDSaver.Helpers;
 using OLEDSaver.Input;
 using OLEDSaver.Services;
+using OLEDSaver.Updates;
 using OLEDSaver.ViewModels;
 
 using KeyEventArgs = System.Windows.Input.KeyEventArgs;
@@ -346,6 +347,13 @@ public partial class MainWindow : Window
         var contextMenu = new System.Windows.Forms.ContextMenuStrip();
         contextMenu.Items.Add("Black out now", null, (_, _) => _blackoutController.Show(BlackoutTrigger.Manual));
         contextMenu.Items.Add("Settings…", null, (_, _) => ShowAndActivate());
+        contextMenu.Items.Add("Check for updates…", null, async (_, _) =>
+        {
+            // The dialogs need a visible owner, and the tray is exactly where the
+            // window is not.
+            ShowAndActivate();
+            await UpdateCoordinator.CheckAsync(this, manual: true);
+        });
         contextMenu.Items.Add("-");
         contextMenu.Items.Add("Quit", null, (_, _) => ExitApplication());
         _trayIcon.ContextMenuStrip = contextMenu;
@@ -408,6 +416,17 @@ public partial class MainWindow : Window
     private void CloseButton_Click(object sender, RoutedEventArgs e) => HideToTray();
 
     private void Quit_Click(object sender, RoutedEventArgs e) => ExitApplication();
+
+    private async void CheckForUpdates_Click(object sender, RoutedEventArgs e) =>
+        await UpdateCoordinator.CheckAsync(this, manual: true);
+
+    /// <summary>
+    /// Ends the app the ordinary way while the updater waits for this process to exit.
+    /// It has to be the ordinary way: the tray icon has to go and the debounced settings
+    /// save has to be flushed, and an update that costs the user those is not an
+    /// improvement.
+    /// </summary>
+    internal void ExitForUpdate() => ExitApplication();
 
     /// <summary>
     /// Releases everything the process holds, without shutting the application

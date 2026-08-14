@@ -1,4 +1,5 @@
 using System.Runtime.InteropServices;
+using OLEDSaver.Helpers;
 using OLEDSaver.Models;
 
 using Screen = System.Windows.Forms.Screen;
@@ -6,12 +7,36 @@ using Screen = System.Windows.Forms.Screen;
 namespace OLEDSaver.Services;
 
 /// <summary>
-/// One monitor. <see cref="Bounds"/> is in physical screen pixels, which is what
-/// the blackout windows are positioned with.
+/// One monitor. The bounds are in physical screen pixels, which is what the
+/// blackout windows are positioned with.
 /// </summary>
-public sealed record DisplayInfo(string Id, string Name, int X, int Y, int Width, int Height, bool IsPrimary)
+/// <param name="Id">
+/// The GDI device name, <c>\\.\DISPLAY1</c>. A slot in the current session's
+/// layout, not a monitor: Windows hands these out again, so it is only good for
+/// matching against what <see cref="Screen"/> reports right now.
+/// </param>
+/// <param name="HardwareId">
+/// The monitor's own device path, which stays with the physical panel. Empty
+/// when Windows would not report one.
+/// </param>
+public sealed record DisplayInfo(
+    string Id,
+    string HardwareId,
+    string Name,
+    int X,
+    int Y,
+    int Width,
+    int Height,
+    bool IsPrimary)
 {
-    /// <summary>What the settings list shows, e.g. "LG OLED42C4 — 3840 × 2160 (primary)".</summary>
+    /// <summary>
+    /// What a saved selection is written and matched against: the hardware id
+    /// where there is one, and the GDI name only as a last resort, on a machine
+    /// that reports no path for the monitor at all.
+    /// </summary>
+    public string StableId => HardwareId.Length > 0 ? HardwareId : Id;
+
+    /// <summary>What the settings list shows, e.g. "Display 2: LG OLED42C4 — 3840 × 2160 (primary)".</summary>
     public string Label
     {
         get
@@ -27,6 +52,8 @@ public static class DisplayService
 {
     public static IReadOnlyList<DisplayInfo> GetDisplays()
     {
+        IReadOnlyDictionary<string, MonitorIdentity> identities = DisplayConfigInterop.GetMonitorIdentities();
+
         var displays = new List<DisplayInfo>();
         int index = 0;
 
@@ -34,9 +61,27 @@ public static class DisplayService
         {
             index++;
 
+            identities.TryGetValue(screen.DeviceName, out MonitorIdentity? identity);
+            string hardwareId = identity?.DevicePath ?? string.Empty;
+            string model = identity?.ModelName ?? string.Empty;
+
+            // EnumDisplayDevices knows less, but it answers on machines and
+            // remote sessions where the display config API reports nothing.
+            if (hardwareId.Length == 0 || model.Length == 0)
+            {
+                MonitorIdentity fallback = ReadMonitorDevice(screen.DeviceName);
+
+                if (hardwareId.Length == 0)
+                    hardwareId = fallback.DevicePath;
+
+                if (model.Length == 0)
+                    model = fallback.ModelName;
+            }
+
             displays.Add(new DisplayInfo(
                 screen.DeviceName,
-                ResolveFriendlyName(screen.DeviceName, index),
+                hardwareId,
+                BuildName(screen.DeviceName, index, model),
                 // Bounds, not WorkingArea: the blackout has to cover the taskbar too.
                 screen.Bounds.X,
                 screen.Bounds.Y,
@@ -70,7 +115,7 @@ public static class DisplayService
 
             case DisplayTargetMode.SelectedDisplays:
                 var selected = displays
-                    .Where(display => selectedIds.Contains(display.Id, StringComparer.OrdinalIgnoreCase))
+                    .Where(display => selectedIds.Contains(display.StableId, StringComparer.OrdinalIgnoreCase))
                     .ToList();
                 return selected.Count > 0 ? selected : displays;
 
@@ -80,30 +125,110 @@ public static class DisplayService
     }
 
     /// <summary>
-    /// The monitor's own name where the driver reports one. Falls back to
-    /// "Display N", since a lot of monitors only ever report "Generic PnP Monitor".
+    /// Rewrites a selection saved before schema 2, which named monitors by their
+    /// GDI slot (<c>\\.\DISPLAY2</c>).
+    ///
+    /// Windows hands those slots back out — after a monitor sleeps, is switched
+    /// off at the panel, or the driver restarts, the monitor that held
+    /// <c>\\.\DISPLAY2</c> can come back as <c>\\.\DISPLAY1</c> and something
+    /// else takes the slot. A tick saved against the slot then blanks whichever
+    /// monitor happens to be sitting in it, which is the wrong screen.
+    ///
+    /// The slot is all an old file says, so the best that can be done is to read
+    /// it once and pin it to the monitor occupying it now. A slot with nothing
+    /// behind it — that monitor is switched off at this moment — cannot be tied
+    /// to a panel at all, and is dropped rather than left to match some other
+    /// monitor later.
     /// </summary>
-    private static string ResolveFriendlyName(string adapterDeviceName, int index)
+    public static IReadOnlyList<string> MigrateLegacySelection(
+        IReadOnlyList<DisplayInfo> displays,
+        IEnumerable<string> selectedIds)
     {
-        string fallback = $"Display {index}";
+        var migrated = new List<string>();
 
+        foreach (string id in selectedIds)
+        {
+            if (!IsLegacyGdiDeviceName(id))
+            {
+                migrated.Add(id);
+                continue;
+            }
+
+            DisplayInfo? match = displays.FirstOrDefault(
+                display => string.Equals(display.Id, id, StringComparison.OrdinalIgnoreCase));
+
+            if (match != null)
+                migrated.Add(match.StableId);
+        }
+
+        return migrated.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+    }
+
+    /// <summary>
+    /// Tells a slot name apart from a hardware id. Device paths start
+    /// <c>\\?\DISPLAY#</c>, GDI names <c>\\.\DISPLAY</c>.
+    /// </summary>
+    private static bool IsLegacyGdiDeviceName(string id) =>
+        id.StartsWith(@"\\.\", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// "Display 2: XG27AQDMGR", or just "Display 2" when nothing reports a model.
+    /// The number is Windows' own, so the list lines up with the arrangement in
+    /// the Settings app.
+    /// </summary>
+    private static string BuildName(string adapterDeviceName, int index, string model)
+    {
+        string label = $"Display {ResolveDisplayNumber(adapterDeviceName, index)}";
+        return model.Length > 0 ? $"{label}: {model}" : label;
+    }
+
+    /// <summary>
+    /// The number out of <c>\\.\DISPLAY2</c>. Enumeration order will not do:
+    /// <see cref="Screen.AllScreens"/> does not return the monitors in slot
+    /// order, and a list that numbers them differently from the Settings app is
+    /// worse than one that does not number them at all.
+    /// </summary>
+    private static int ResolveDisplayNumber(string adapterDeviceName, int index)
+    {
+        int start = adapterDeviceName.Length;
+        while (start > 0 && char.IsAsciiDigit(adapterDeviceName[start - 1]))
+            start--;
+
+        return int.TryParse(adapterDeviceName.AsSpan(start), out int number) && number > 0
+            ? number
+            : index;
+    }
+
+    /// <summary>
+    /// The monitor's device path and model name through EnumDisplayDevices, for
+    /// the machines <see cref="DisplayConfigInterop"/> gets nothing out of. The
+    /// interface flag is what makes the device path come back in DeviceID;
+    /// without it the field holds a hardware id shared by identical monitors.
+    /// </summary>
+    private static MonitorIdentity ReadMonitorDevice(string adapterDeviceName)
+    {
         try
         {
             var monitor = new DISPLAY_DEVICE { cb = Marshal.SizeOf<DISPLAY_DEVICE>() };
-            if (!EnumDisplayDevicesW(adapterDeviceName, 0, ref monitor, 0))
-                return fallback;
+            if (!EnumDisplayDevicesW(adapterDeviceName, 0, ref monitor, EDD_GET_DEVICE_INTERFACE_NAME))
+                return new MonitorIdentity(string.Empty, string.Empty);
 
-            string name = monitor.DeviceString.Trim();
-            if (string.IsNullOrEmpty(name) || name.Equals("Generic PnP Monitor", StringComparison.OrdinalIgnoreCase))
-                return fallback;
+            string model = monitor.DeviceString.Trim();
 
-            return $"{fallback}: {name}";
+            // A lot of monitors only ever report this, which tells the user
+            // nothing and would make two rows in the list read identically.
+            if (model.Equals("Generic PnP Monitor", StringComparison.OrdinalIgnoreCase))
+                model = string.Empty;
+
+            return new MonitorIdentity(monitor.DeviceID.Trim(), model);
         }
         catch (Exception)
         {
-            return fallback;
+            return new MonitorIdentity(string.Empty, string.Empty);
         }
     }
+
+    private const uint EDD_GET_DEVICE_INTERFACE_NAME = 0x00000001;
 
     [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
     private struct DISPLAY_DEVICE

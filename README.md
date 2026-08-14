@@ -23,8 +23,10 @@ Built with .NET 10 and WPF, and modelled on the input and startup handling in
   press never counts twice.
 - **Per-monitor targeting.** All displays, the primary only, or a ticked set —
   which is the point on a mixed desktop: blank the OLED and leave the LCD alone.
-  Hot-plugging or rearranging a monitor while the blackout is up re-covers
-  everything.
+  A ticked monitor is remembered by its own device path and listed by its model
+  name, so the selection stays on that panel when Windows renumbers the displays
+  after a sleep, a power cycle or a driver restart. Hot-plugging or rearranging a
+  monitor while the blackout is up re-covers everything.
 - **Comes back on your terms.** A key press and a mouse click by default, mouse
   movement optionally, Escape and the hotkey always.
 - **Idle blackout.** Optionally blanks the screen after N minutes with no input,
