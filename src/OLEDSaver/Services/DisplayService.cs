@@ -54,7 +54,7 @@ public static class DisplayService
     {
         IReadOnlyDictionary<string, MonitorIdentity> identities = DisplayConfigInterop.GetMonitorIdentities();
 
-        var displays = new List<DisplayInfo>();
+        var displays = new List<(int Number, DisplayInfo Display)>();
         int index = 0;
 
         foreach (Screen screen in Screen.AllScreens)
@@ -78,19 +78,27 @@ public static class DisplayService
                     model = fallback.ModelName;
             }
 
-            displays.Add(new DisplayInfo(
+            int number = ResolveDisplayNumber(screen.DeviceName, index);
+
+            displays.Add((number, new DisplayInfo(
                 screen.DeviceName,
                 hardwareId,
-                BuildName(screen.DeviceName, index, model),
+                BuildName(number, model),
                 // Bounds, not WorkingArea: the blackout has to cover the taskbar too.
                 screen.Bounds.X,
                 screen.Bounds.Y,
                 screen.Bounds.Width,
                 screen.Bounds.Height,
-                screen.Primary));
+                screen.Primary)));
         }
 
-        return displays;
+        // Screen.AllScreens comes back in whatever order Windows enumerated the
+        // adapters, which is not slot order: "Display 2" above "Display 1" reads
+        // as a bug in the list even though both rows are labelled correctly.
+        return displays
+            .OrderBy(entry => entry.Number)
+            .Select(entry => entry.Display)
+            .ToList();
     }
 
     /// <summary>
@@ -176,9 +184,9 @@ public static class DisplayService
     /// The number is Windows' own, so the list lines up with the arrangement in
     /// the Settings app.
     /// </summary>
-    private static string BuildName(string adapterDeviceName, int index, string model)
+    private static string BuildName(int number, string model)
     {
-        string label = $"Display {ResolveDisplayNumber(adapterDeviceName, index)}";
+        string label = $"Display {number}";
         return model.Length > 0 ? $"{label}: {model}" : label;
     }
 
