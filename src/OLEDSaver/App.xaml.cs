@@ -184,6 +184,11 @@ public partial class App : Application
         _singleInstanceMutex?.Dispose();
         _singleInstanceMutex = null;
 
+        // Belt and braces for the exit paths that never reach MainWindow.Teardown:
+        // the update and cleanup modes above return before a window exists, and
+        // their log is the only record of what they did.
+        AppDiagnostics.Flush();
+
         base.OnExit(e);
     }
 

@@ -1,3 +1,6 @@
+using System.Diagnostics;
+using System.Windows.Media;
+using System.Windows.Threading;
 using OLEDSaver.Helpers;
 using OLEDSaver.Input;
 using OLEDSaver.Models;
@@ -63,14 +66,44 @@ public enum BlackoutDismissReason
 /// </summary>
 public sealed class BlackoutController : IDisposable
 {
+    /// <summary>
+    /// How many overlays are kept alive between blackouts. One per monitor is the
+    /// point; the cap only exists so an unusual desktop cannot leave the process
+    /// holding a dozen idle render surfaces.
+    /// </summary>
+    private const int MaxPooledWindows = 8;
+
+    /// <summary>
+    /// How long the overlay may take to actually reach the screen before that is
+    /// worth a line in the log. Show() returning is not the same as the monitor
+    /// being black — WPF composes the frame afterwards — and this is the number
+    /// that matches what the delay feels like. Roughly two frames at 60 Hz, so a
+    /// blackout that goes up promptly says nothing and a sluggish one is on the
+    /// record. Set well above the ~45 ms the first blackout of a session costs,
+    /// which is the pre-built overlay being moved onto its monitor for the first
+    /// time and is not what "sluggish" means.
+    /// </summary>
+    private static readonly TimeSpan SlowFirstFrameThreshold = TimeSpan.FromMilliseconds(100);
+
     private readonly IBlackoutOptions _options;
     private readonly Func<IntPtr> _rawInputHostHandle;
     private readonly BlackoutDismissEvaluator _dismissEvaluator = new();
     private readonly List<BlackoutWindow> _windows = new();
 
+    /// <summary>
+    /// Overlays that have been built, shown once and hidden again, waiting to be
+    /// shown over the same monitor. Reusing them is what makes the hotkey feel
+    /// instant: building a WPF window, creating its handle and letting WPF
+    /// allocate a render surface the size of the monitor is most of the delay
+    /// between the key going down and the screen going black, and none of it has
+    /// to happen more than once.
+    /// </summary>
+    private readonly List<BlackoutWindow> _pool = new();
+
     private IntPtr _previousForegroundWindow;
     private bool _mouseSinkRegistered;
     private bool _displayRequested;
+    private bool _prewarmed;
     private bool _disposed;
 
     public BlackoutController(IBlackoutOptions options, Func<IntPtr> rawInputHostHandle)
@@ -105,10 +138,9 @@ public sealed class BlackoutController : IDisposable
         if (_disposed || IsActive)
             return;
 
-        IReadOnlyList<DisplayInfo> targets = DisplayService.ResolveTargets(
-            DisplayService.GetDisplays(),
-            _options.DisplayTargetMode,
-            _options.SelectedDisplayIds);
+        long startedAt = Stopwatch.GetTimestamp();
+
+        IReadOnlyList<DisplayInfo> targets = ResolveCurrentTargets();
 
         if (targets.Count == 0)
         {
@@ -120,7 +152,7 @@ public sealed class BlackoutController : IDisposable
         // keyboard back where the user left it.
         _previousForegroundWindow = NativeInterop.GetCurrentForegroundWindow();
 
-        CreateWindows(targets);
+        ShowWindows(targets);
 
         // Taking focus is deliberate: with the screen black, keystrokes must not
         // keep landing in whatever was in front a moment ago.
@@ -133,9 +165,136 @@ public sealed class BlackoutController : IDisposable
         RegisterMouseSink();
         ApplyDisplayRequest(_options.KeepDisplaysAwake);
 
-        AppDiagnostics.Info($"Blackout on ({trigger}) covering {targets.Count} display(s).");
+        // The elapsed time is logged because "it feels sluggish" is otherwise
+        // unmeasurable after the fact, and the number tells a cold first blackout
+        // apart from a warm one that reused its overlays.
+        AppDiagnostics.Info(
+            $"Blackout on ({trigger}) covering {targets.Count} display(s) "
+            + $"in {Stopwatch.GetElapsedTime(startedAt).TotalMilliseconds:F1} ms.");
+
+        ReportSlowFirstFrame(startedAt);
         ActiveChanged?.Invoke(this, true);
     }
+
+    /// <summary>
+    /// Logs how long the blackout took to reach the screen, but only when that was
+    /// slow enough to feel like it.
+    ///
+    /// The work above is synchronous; the frame is not. WPF composes and presents
+    /// on its own thread after the dispatcher yields, so a Show() that returns in
+    /// two milliseconds can still leave the desktop visible for another fifty.
+    /// The first Rendering tick after the overlays go up is the closest thing to
+    /// "the screen is black now" that is observable from here.
+    /// </summary>
+    private void ReportSlowFirstFrame(long startedAt)
+    {
+        EventHandler? onRendering = null;
+
+        onRendering = (_, _) =>
+        {
+            // One frame only. Left attached it would run for every frame the app
+            // ever composes.
+            CompositionTarget.Rendering -= onRendering;
+
+            TimeSpan elapsed = Stopwatch.GetElapsedTime(startedAt);
+            if (elapsed < SlowFirstFrameThreshold)
+                return;
+
+            AppDiagnostics.Warning($"Blackout took {elapsed.TotalMilliseconds:F1} ms to reach the screen.");
+        };
+
+        CompositionTarget.Rendering += onRendering;
+    }
+
+    /// <summary>
+    /// Builds the overlays and reads the display layout before anyone asks for a
+    /// blackout, so the first press of the hotkey costs no more than the tenth.
+    ///
+    /// Everything expensive about the first blackout happens exactly once per
+    /// process: parsing the window's compiled XAML, creating its handle, WPF
+    /// spinning up its render thread and D3D device, resolving the Segoe UI glyph
+    /// typeface for the hint, and asking Windows what monitors are attached.
+    /// Doing it here spends an idle moment after startup instead of a visible
+    /// stall on the hotkey. The windows are parked far off every monitor while
+    /// this runs, so nothing appears on screen.
+    /// </summary>
+    public void Prewarm()
+    {
+        if (_disposed || _prewarmed || IsActive)
+            return;
+
+        _prewarmed = true;
+
+        try
+        {
+            IReadOnlyList<DisplayInfo> targets = ResolveCurrentTargets();
+            if (targets.Count == 0)
+                return;
+
+            int count = Math.Min(targets.Count, MaxPooledWindows);
+            var warming = new List<BlackoutWindow>(count);
+
+            for (int index = 0; index < count; index++)
+            {
+                BlackoutWindow window = CreateWindow();
+
+                // The real hint, visible: laying the TextBlock out is what makes
+                // WPF resolve the Segoe UI glyph typeface, and leaving that to the
+                // first blackout costs it a good 20 ms. Nothing is on screen to
+                // see it — the window is parked off every monitor.
+                window.PrepareForShow(BuildHintText(), showHint: true);
+
+                // Parked at the size it will be shown at, so the maximize on the
+                // first real blackout is a move rather than a reallocation.
+                window.ParkOffScreen(targets[index].Width, targets[index].Height);
+                window.ShowForPrewarm();
+
+                warming.Add(window);
+            }
+
+            // Hidden only once the dispatcher has gone idle, which is after WPF
+            // has laid each window out and composed a frame for it. Hiding in this
+            // same turn would skip the render, and the render is the part most
+            // worth paying for early.
+            warming[0].Dispatcher.BeginInvoke(DispatcherPriority.ApplicationIdle, () =>
+            {
+                foreach (BlackoutWindow window in warming)
+                {
+                    // A blackout that started while the prewarm was in flight owns
+                    // this window now.
+                    if (_windows.Contains(window))
+                        continue;
+
+                    window.Hide();
+
+                    // Shown and hidden a second time, because the path that shows
+                    // an existing hidden window is not the path that shows a new
+                    // one, and every blackout after the first takes it. Running it
+                    // once here is what gets it compiled before the hotkey needs it.
+                    window.ShowForPrewarm();
+                    window.Hide();
+                    window.StopHint();
+
+                    if (_pool.Count < MaxPooledWindows)
+                        _pool.Add(window);
+                    else
+                        CloseWindow(window);
+                }
+
+                AppDiagnostics.Info($"Blackout overlays pre-built for {warming.Count} display(s).");
+            });
+        }
+        catch (Exception ex)
+        {
+            // A failed prewarm costs nothing but the speed it was meant to buy.
+            AppDiagnostics.Warning("Failed to pre-build the blackout overlays.", ex);
+        }
+    }
+
+    private IReadOnlyList<DisplayInfo> ResolveCurrentTargets() => DisplayService.ResolveTargets(
+        DisplayService.GetDisplays(),
+        _options.DisplayTargetMode,
+        _options.SelectedDisplayIds);
 
     public void Hide(BlackoutDismissReason reason)
     {
@@ -143,7 +302,7 @@ public sealed class BlackoutController : IDisposable
             return;
 
         AppDiagnostics.Info($"Blackout off ({reason}).");
-        DestroyWindows();
+        HideWindows();
         ReleaseBlackoutState();
     }
 
@@ -174,10 +333,7 @@ public sealed class BlackoutController : IDisposable
         if (!IsActive)
             return;
 
-        IReadOnlyList<DisplayInfo> targets = DisplayService.ResolveTargets(
-            DisplayService.GetDisplays(),
-            _options.DisplayTargetMode,
-            _options.SelectedDisplayIds);
+        IReadOnlyList<DisplayInfo> targets = ResolveCurrentTargets();
 
         if (targets.Count == 0)
         {
@@ -185,10 +341,20 @@ public sealed class BlackoutController : IDisposable
             return;
         }
 
-        DestroyWindows();
-        CreateWindows(targets);
+        // WM_DISPLAYCHANGE also arrives for changes that move nothing the blackout
+        // cares about — a refresh rate, or a monitor that is already covered
+        // waking up. Re-covering anyway would drop every overlay and put it
+        // straight back, which is a full-screen flash of desktop for no reason.
+        if (_windows.Count == targets.Count && targets.All(IsAlreadyCovered))
+            return;
+
+        HideWindows();
+        ShowWindows(targets);
         _windows[0].Activate();
     }
+
+    private bool IsAlreadyCovered(DisplayInfo target) =>
+        _windows.Exists(window => window.IsCovering(target));
 
     /// <summary>Feeds a keyboard event from the global raw-input sink.</summary>
     public void HandleKeyEvent(uint virtualKey, bool isKeyDown)
@@ -221,42 +387,109 @@ public sealed class BlackoutController : IDisposable
         }
     }
 
-    private void CreateWindows(IReadOnlyList<DisplayInfo> targets)
+    private void ShowWindows(IReadOnlyList<DisplayInfo> targets)
     {
         string hint = BuildHintText();
         bool showHint = _options.ShowHintOnBlackout;
 
         foreach (DisplayInfo target in targets)
         {
-            var window = new BlackoutWindow(hint, showHint);
-            window.KeyObserved += OnWindowKeyObserved;
-            window.MouseButtonObserved += OnWindowMouseButtonObserved;
-            window.Closed += OnWindowClosedFromOutside;
+            BlackoutWindow window = RentWindow(target);
+            window.PrepareForShow(hint, showHint);
 
-            // Shown far off-screen first, because a WPF window is placed and sized
-            // by its own properties on the way up and would otherwise appear
-            // briefly on the primary monitor. CoverDisplay then moves it onto the
-            // monitor it belongs to and maximizes it there.
-            window.Left = -32000;
-            window.Top = -32000;
-            window.Width = 200;
-            window.Height = 200;
+            // The fast path, and the reason the pool exists: this overlay is still
+            // sized and positioned over exactly this monitor from last time, so
+            // there is nothing to move, nothing to lay out again and no render
+            // surface to allocate — only a ShowWindow call.
+            bool alreadyCovering = window.IsCovering(target);
+
+            if (!alreadyCovering)
+            {
+                // Parked far off every monitor first, because a WPF window is
+                // placed and sized by its own properties on the way up and would
+                // otherwise appear briefly on the primary monitor. CoverDisplay
+                // then moves it onto the monitor it belongs to and maximizes it
+                // there.
+                window.ParkOffScreen(target.Width, target.Height);
+            }
+
             window.Show();
-            window.CoverDisplay(target);
+
+            if (!alreadyCovering)
+                window.CoverDisplay(target);
 
             _windows.Add(window);
         }
     }
 
-    private void DestroyWindows()
+    /// <summary>
+    /// An overlay for this monitor: the pooled one that already covers it where
+    /// there is one, any pooled one otherwise, and a new window only when the pool
+    /// is empty.
+    /// </summary>
+    private BlackoutWindow RentWindow(DisplayInfo target)
+    {
+        int match = _pool.FindIndex(window => window.IsCovering(target));
+        if (match < 0)
+            match = _pool.Count - 1;
+
+        if (match < 0)
+            return CreateWindow();
+
+        BlackoutWindow pooled = _pool[match];
+        _pool.RemoveAt(match);
+        return pooled;
+    }
+
+    private BlackoutWindow CreateWindow()
+    {
+        var window = new BlackoutWindow();
+        window.KeyObserved += OnWindowKeyObserved;
+        window.MouseButtonObserved += OnWindowMouseButtonObserved;
+        window.Closed += OnWindowClosedFromOutside;
+        return window;
+    }
+
+    /// <summary>
+    /// Takes the overlays down without destroying them. They keep their handle,
+    /// their render surface and their placement over the monitor they were
+    /// covering, which is exactly what the next blackout reuses.
+    /// </summary>
+    private void HideWindows()
     {
         foreach (BlackoutWindow window in _windows)
         {
-            window.KeyObserved -= OnWindowKeyObserved;
-            window.MouseButtonObserved -= OnWindowMouseButtonObserved;
-            window.Closed -= OnWindowClosedFromOutside;
-            window.Close();
+            // A hidden window animating its hint would keep WPF composing frames
+            // for something nobody can see.
+            window.StopHint();
+            window.Hide();
+
+            if (_pool.Count < MaxPooledWindows)
+                _pool.Add(window);
+            else
+                CloseWindow(window);
         }
+
+        _windows.Clear();
+    }
+
+    private void CloseWindow(BlackoutWindow window)
+    {
+        window.KeyObserved -= OnWindowKeyObserved;
+        window.MouseButtonObserved -= OnWindowMouseButtonObserved;
+        window.Closed -= OnWindowClosedFromOutside;
+        window.Close();
+    }
+
+    private void CloseAllWindows()
+    {
+        foreach (BlackoutWindow window in _pool)
+            CloseWindow(window);
+
+        _pool.Clear();
+
+        foreach (BlackoutWindow window in _windows)
+            CloseWindow(window);
 
         _windows.Clear();
     }
@@ -273,7 +506,15 @@ public sealed class BlackoutController : IDisposable
             return;
 
         if (sender is BlackoutWindow window)
+        {
+            // A pooled overlay is hidden off-screen and covering nothing. Losing
+            // one costs the next blackout a rebuild and nothing else, so it must
+            // not bring a live blackout down with it.
+            if (_pool.Remove(window))
+                return;
+
             _windows.Remove(window);
+        }
 
         // Any windows left are torn down through the normal path; if that was the
         // last one there is nothing to close, only state to release.
@@ -365,6 +606,6 @@ public sealed class BlackoutController : IDisposable
         _dismissEvaluator.Disarm();
         UnregisterMouseSink();
         ApplyDisplayRequest(false);
-        DestroyWindows();
+        CloseAllWindows();
     }
 }

@@ -26,6 +26,7 @@ public static class NativeInterop
     private static readonly IntPtr HWND_TOPMOST = new(-1);
     private const uint SWP_NOACTIVATE = 0x0010;
     private const uint SWP_SHOWWINDOW = 0x0040;
+    private const uint SWP_NOZORDER = 0x0004;
 
     private const int SW_RESTORE = 9;
 
@@ -155,6 +156,25 @@ public static class NativeInterop
             return;
 
         SetWindowPos(hwnd, HWND_TOPMOST, x, y, width, height, SWP_SHOWWINDOW | SWP_NOACTIVATE);
+    }
+
+    /// <summary>
+    /// Moves and sizes a window that is currently hidden, leaving it hidden.
+    ///
+    /// This is how a pooled blackout overlay is aimed at the monitor it will
+    /// cover before anyone can see it. Omitting SWP_SHOWWINDOW is the whole
+    /// point: <see cref="PlaceWindowAtDeviceBounds"/> would make the window
+    /// visible at the moment it is moved, which on the way to a monitor shows a
+    /// black rectangle sliding across the desktop.
+    /// </summary>
+    /// <returns>False when the window has no handle yet and nothing was moved.</returns>
+    public static bool TryPlaceHiddenWindowAtDeviceBounds(Window window, int x, int y, int width, int height)
+    {
+        IntPtr hwnd = new WindowInteropHelper(window).Handle;
+        if (hwnd == IntPtr.Zero)
+            return false;
+
+        return SetWindowPos(hwnd, IntPtr.Zero, x, y, width, height, SWP_NOACTIVATE | SWP_NOZORDER);
     }
 
     public static IntPtr GetCurrentForegroundWindow() => GetForegroundWindow();

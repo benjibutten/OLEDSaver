@@ -1,4 +1,5 @@
 using System.Runtime.InteropServices;
+using Microsoft.Win32;
 using OLEDSaver.Helpers;
 using OLEDSaver.Models;
 
@@ -50,10 +51,41 @@ public sealed record DisplayInfo(
 /// <summary>Enumerates monitors and works out which ones a blackout should cover.</summary>
 public static class DisplayService
 {
+    // Identities are cached; bounds never are. Which monitors exist, where they
+    // sit and how big they are is re-read on every call because getting that
+    // wrong leaves a lit strip of desktop showing, and Screen.AllScreens is a
+    // cheap question. What a monitor *is* — its device path and model name —
+    // costs a QueryDisplayConfig round trip plus a DisplayConfigGetDeviceInfo and
+    // an EnumDisplayDevices per monitor, which is the single most expensive thing
+    // on the path between the hotkey and a black screen, and the answer only
+    // changes when the display layout does.
+    private static readonly object CacheLock = new();
+    private static readonly Dictionary<string, MonitorIdentity> IdentityCache = new(StringComparer.OrdinalIgnoreCase);
+    private static IReadOnlyDictionary<string, MonitorIdentity>? _displayConfigIdentities;
+
+    static DisplayService()
+    {
+        // Broader than the WM_DISPLAYCHANGE the main window already sees: this
+        // also fires for a monitor waking, a driver restart and a resolution
+        // change made while the app has no window handle to receive messages on.
+        SystemEvents.DisplaySettingsChanged += (_, _) => InvalidateIdentityCache();
+    }
+
+    /// <summary>
+    /// Drops the cached monitor identities. Cheap to call more often than
+    /// necessary — the next enumeration simply pays for the interop again.
+    /// </summary>
+    public static void InvalidateIdentityCache()
+    {
+        lock (CacheLock)
+        {
+            IdentityCache.Clear();
+            _displayConfigIdentities = null;
+        }
+    }
+
     public static IReadOnlyList<DisplayInfo> GetDisplays()
     {
-        IReadOnlyDictionary<string, MonitorIdentity> identities = DisplayConfigInterop.GetMonitorIdentities();
-
         var displays = new List<(int Number, DisplayInfo Display)>();
         int index = 0;
 
@@ -61,29 +93,13 @@ public static class DisplayService
         {
             index++;
 
-            identities.TryGetValue(screen.DeviceName, out MonitorIdentity? identity);
-            string hardwareId = identity?.DevicePath ?? string.Empty;
-            string model = identity?.ModelName ?? string.Empty;
-
-            // EnumDisplayDevices knows less, but it answers on machines and
-            // remote sessions where the display config API reports nothing.
-            if (hardwareId.Length == 0 || model.Length == 0)
-            {
-                MonitorIdentity fallback = ReadMonitorDevice(screen.DeviceName);
-
-                if (hardwareId.Length == 0)
-                    hardwareId = fallback.DevicePath;
-
-                if (model.Length == 0)
-                    model = fallback.ModelName;
-            }
-
+            MonitorIdentity identity = ResolveIdentity(screen.DeviceName);
             int number = ResolveDisplayNumber(screen.DeviceName, index);
 
             displays.Add((number, new DisplayInfo(
                 screen.DeviceName,
-                hardwareId,
-                BuildName(number, model),
+                identity.DevicePath,
+                BuildName(number, identity.ModelName),
                 // Bounds, not WorkingArea: the blackout has to cover the taskbar too.
                 screen.Bounds.X,
                 screen.Bounds.Y,
@@ -99,6 +115,45 @@ public static class DisplayService
             .OrderBy(entry => entry.Number)
             .Select(entry => entry.Display)
             .ToList();
+    }
+
+    /// <summary>
+    /// The device path and model name behind one GDI slot, read once per display
+    /// layout. A slot that neither API can identify is cached as empty rather
+    /// than re-queried on every blackout: a monitor that reports nothing will go
+    /// on reporting nothing until the layout changes, and the failing query is
+    /// the slow one.
+    /// </summary>
+    private static MonitorIdentity ResolveIdentity(string adapterDeviceName)
+    {
+        lock (CacheLock)
+        {
+            if (IdentityCache.TryGetValue(adapterDeviceName, out MonitorIdentity? cached))
+                return cached;
+
+            _displayConfigIdentities ??= DisplayConfigInterop.GetMonitorIdentities();
+            _displayConfigIdentities.TryGetValue(adapterDeviceName, out MonitorIdentity? identity);
+
+            string hardwareId = identity?.DevicePath ?? string.Empty;
+            string model = identity?.ModelName ?? string.Empty;
+
+            // EnumDisplayDevices knows less, but it answers on machines and
+            // remote sessions where the display config API reports nothing.
+            if (hardwareId.Length == 0 || model.Length == 0)
+            {
+                MonitorIdentity fallback = ReadMonitorDevice(adapterDeviceName);
+
+                if (hardwareId.Length == 0)
+                    hardwareId = fallback.DevicePath;
+
+                if (model.Length == 0)
+                    model = fallback.ModelName;
+            }
+
+            var resolved = new MonitorIdentity(hardwareId, model);
+            IdentityCache[adapterDeviceName] = resolved;
+            return resolved;
+        }
     }
 
     /// <summary>

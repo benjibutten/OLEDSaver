@@ -3,6 +3,7 @@ using System.IO;
 using System.Windows;
 using System.Windows.Input;
 using System.Windows.Interop;
+using System.Windows.Threading;
 using OLEDSaver.Helpers;
 using OLEDSaver.Input;
 using OLEDSaver.Services;
@@ -92,6 +93,12 @@ public partial class MainWindow : Window
 
         if (_startHiddenInTray)
             HideToTray();
+
+        // Deferred to the first idle moment so it competes with nothing: the
+        // overlays the blackout will reuse are built here rather than under the
+        // hotkey, which is the difference between a blackout that appears at once
+        // and one that visibly waits for WPF to create a window.
+        Dispatcher.BeginInvoke(DispatcherPriority.ApplicationIdle, () => _blackoutController.Prewarm());
     }
 
     // ------------------------------------------------------------------ hotkey
@@ -226,6 +233,9 @@ public partial class MainWindow : Window
             case NativeInterop.WM_DISPLAYCHANGE:
             case NativeInterop.WM_DPICHANGED:
                 // A monitor was plugged in, unplugged, rearranged or rescaled.
+                // The cached monitor identities describe the layout that just
+                // stopped being true, so they go first.
+                DisplayService.InvalidateIdentityCache();
                 _viewModel.RefreshDisplays();
                 _blackoutController.HandleDisplayChange();
                 break;
@@ -473,6 +483,11 @@ public partial class MainWindow : Window
 
         // Flushes any debounced save before the process goes away.
         _viewModel.Dispose();
+
+        // The log is written on a background thread, so the last entries are
+        // still in memory at this point — including whatever explains why the app
+        // is shutting down.
+        AppDiagnostics.Flush();
     }
 
     protected override void OnClosing(System.ComponentModel.CancelEventArgs e)
