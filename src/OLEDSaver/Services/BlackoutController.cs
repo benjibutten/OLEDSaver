@@ -169,12 +169,26 @@ public sealed class BlackoutController : IDisposable
         // unmeasurable after the fact, and the number tells a cold first blackout
         // apart from a warm one that reused its overlays.
         AppDiagnostics.Info(
-            $"Blackout on ({trigger}) covering {targets.Count} display(s) "
+            $"Blackout on ({trigger}) covering {Describe(targets)} "
             + $"in {Stopwatch.GetElapsedTime(startedAt).TotalMilliseconds:F1} ms.");
 
         ReportSlowFirstFrame(startedAt);
         ActiveChanged?.Invoke(this, true);
     }
+
+    /// <summary>
+    /// Which monitors the blackout went onto, for the log.
+    ///
+    /// The count on its own cannot answer the only question worth asking after
+    /// "it blanked the wrong screen": which panel did it actually cover, and was
+    /// that the one the settings window had ticked. Naming them is what turns
+    /// that from an argument into a lookup.
+    /// </summary>
+    private static string Describe(IReadOnlyList<DisplayInfo> targets) =>
+        $"{targets.Count} display(s) ["
+        + string.Join(", ", targets.Select(target =>
+            $"{target.Name} @ {target.X},{target.Y} {target.Width}x{target.Height}"))
+        + "]";
 
     /// <summary>
     /// Logs how long the blackout took to reach the screen, but only when that was

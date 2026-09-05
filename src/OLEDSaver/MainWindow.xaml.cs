@@ -233,9 +233,6 @@ public partial class MainWindow : Window
             case NativeInterop.WM_DISPLAYCHANGE:
             case NativeInterop.WM_DPICHANGED:
                 // A monitor was plugged in, unplugged, rearranged or rescaled.
-                // The cached monitor identities describe the layout that just
-                // stopped being true, so they go first.
-                DisplayService.InvalidateIdentityCache();
                 _viewModel.RefreshDisplays();
                 _blackoutController.HandleDisplayChange();
                 break;
