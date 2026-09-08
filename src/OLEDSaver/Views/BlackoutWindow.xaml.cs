@@ -53,23 +53,26 @@ public partial class BlackoutWindow : Window
     public event EventHandler? MouseButtonObserved;
 
     /// <summary>
-    /// The monitor this window is currently sized and positioned over, or null
-    /// while it is parked. Compared against the next blackout's target so an
-    /// unchanged layout skips the move-and-maximize entirely.
-    /// </summary>
-    public DisplayInfo? CoveredDisplay { get; private set; }
-
-    /// <summary>
-    /// True when the window already covers exactly this rectangle and needs
-    /// nothing but a <see cref="Window.Show"/> to become a blackout again.
+    /// True when the window already covers exactly this monitor and needs nothing
+    /// but a <see cref="Window.Show"/> to become a blackout again.
+    ///
+    /// Measured, never remembered. Windows relocates windows off a monitor that
+    /// goes away — one that slept, was switched off at the panel, or had its
+    /// driver restart — and the hidden overlays waiting here for the next blackout
+    /// are moved with everything else, silently. An overlay that answered from the
+    /// monitor it was last *put* on would go on claiming that monitor from
+    /// wherever Windows had parked it; the blackout would take the fast path that
+    /// skips repositioning, and the screen would go black on the wrong panel while
+    /// the log and the settings window both named the right one. Nothing revisited
+    /// the claim afterwards, so it stayed wrong until the process restarted.
     /// </summary>
     public bool IsCovering(DisplayInfo display) =>
-        CoveredDisplay is { } covered
-        && covered.X == display.X
-        && covered.Y == display.Y
-        && covered.Width == display.Width
-        && covered.Height == display.Height
-        && WindowState == WindowState.Maximized;
+        WindowState == WindowState.Maximized
+        && NativeInterop.TryGetWindowDeviceBounds(this, out int x, out int y, out int width, out int height)
+        && x == display.X
+        && y == display.Y
+        && width == display.Width
+        && height == display.Height;
 
     /// <summary>
     /// Puts the content into the state this blackout wants before the window goes
@@ -133,8 +136,6 @@ public partial class BlackoutWindow : Window
         // instead leaves WPF's layout at the previous size, and the overlay then
         // covers the screen while painting almost none of it.
         WindowState = WindowState.Maximized;
-
-        CoveredDisplay = display;
     }
 
     /// <summary>
@@ -149,7 +150,6 @@ public partial class BlackoutWindow : Window
     public void ParkOffScreen(int width, int height)
     {
         WindowState = WindowState.Normal;
-        CoveredDisplay = null;
 
         if (NativeInterop.TryPlaceHiddenWindowAtDeviceBounds(this, ParkedX, ParkedY, width, height))
             return;

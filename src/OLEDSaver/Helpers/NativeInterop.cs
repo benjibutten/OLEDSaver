@@ -177,6 +177,32 @@ public static class NativeInterop
         return SetWindowPos(hwnd, IntPtr.Zero, x, y, width, height, SWP_NOACTIVATE | SWP_NOZORDER);
     }
 
+    /// <summary>
+    /// Where the window is right now, in physical screen pixels.
+    ///
+    /// A different question from where it was put. Windows relocates windows off a
+    /// monitor that goes away — one that slept, was switched off at the panel or
+    /// had its driver restart — and the hidden overlays waiting for the next
+    /// blackout are moved along with everything else, without the app being told.
+    /// Asking Windows is the only way to find out that happened.
+    /// </summary>
+    /// <returns>False when the window has no handle yet.</returns>
+    public static bool TryGetWindowDeviceBounds(
+        Window window, out int x, out int y, out int width, out int height)
+    {
+        x = y = width = height = 0;
+
+        IntPtr hwnd = new WindowInteropHelper(window).Handle;
+        if (hwnd == IntPtr.Zero || !GetWindowRect(hwnd, out RECT rect))
+            return false;
+
+        x = rect.Left;
+        y = rect.Top;
+        width = rect.Right - rect.Left;
+        height = rect.Bottom - rect.Top;
+        return true;
+    }
+
     public static IntPtr GetCurrentForegroundWindow() => GetForegroundWindow();
 
     /// <summary>

@@ -129,10 +129,16 @@ public static class DisplayService
     }
 
     /// <summary>
-    /// The monitors to blank. Pure so the fallback behaviour is testable:
-    /// a selection that matches nothing (the OLED was unplugged, or it is off)
-    /// falls back to every monitor rather than blanking nothing at all, because a
-    /// hotkey that appears to do nothing is worse than blanking too much.
+    /// The monitors to blank.
+    ///
+    /// A selection that matches nothing blanks nothing. The monitor a user ticked
+    /// is regularly missing from this list — one asleep on DisplayPort leaves the
+    /// topology altogether, and so does one switched off at the panel — and the
+    /// only other monitors to fall back on are the ones they deliberately left
+    /// unticked. Blanking those is the complaint, not the safety net: a hotkey
+    /// that does nothing is an obvious, correctable failure, while a screen that
+    /// goes black despite never being ticked reads as the app ignoring its own
+    /// settings. <see cref="BlackoutController"/> puts the reason in the log.
     /// </summary>
     public static IReadOnlyList<DisplayInfo> ResolveTargets(
         IReadOnlyList<DisplayInfo> displays,
@@ -149,10 +155,16 @@ public static class DisplayService
                 return new[] { primary };
 
             case DisplayTargetMode.SelectedDisplays:
-                var selected = displays
+                // Nothing ticked at all is a different case from a ticked monitor
+                // that is missing: AppSettings.Normalize and MainViewModel move the
+                // mode back to AllDisplays when the last box is unticked, and this
+                // agrees with them rather than blanking nothing until they do.
+                if (selectedIds.Count == 0)
+                    return displays;
+
+                return displays
                     .Where(display => selectedIds.Contains(display.StableId, StringComparer.OrdinalIgnoreCase))
                     .ToList();
-                return selected.Count > 0 ? selected : displays;
 
             default:
                 return displays;

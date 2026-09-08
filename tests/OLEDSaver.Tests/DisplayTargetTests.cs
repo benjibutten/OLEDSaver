@@ -95,30 +95,32 @@ public class DisplayTargetTests
     }
 
     [Fact]
-    public void A_selection_that_matches_nothing_falls_back_to_every_display()
+    public void A_selection_that_matches_nothing_blanks_nothing()
     {
-        // The selected monitor was unplugged. A hotkey that silently does nothing
-        // is worse than blanking more than asked.
+        // The ticked monitor is not attached — unplugged, switched off, or asleep
+        // on DisplayPort, which drops it out of the topology altogether. The only
+        // monitors left are the ones deliberately left unticked, and blanking those
+        // is the failure this mode exists to prevent.
         IReadOnlyList<DisplayInfo> targets = DisplayService.ResolveTargets(
             Displays,
             DisplayTargetMode.SelectedDisplays,
             new[] { @"\\?\DISPLAY#DEL0000#5&0&UID99999#{e6f07b5f-ee97-4a90-b076-33f57bf4eaa7}" });
 
-        Assert.Equal(Displays, targets);
+        Assert.Empty(targets);
     }
 
     [Fact]
     public void A_saved_gdi_slot_name_no_longer_matches_a_monitor_that_reports_a_hardware_id()
     {
         // An unmigrated slot name must not resolve by slot, because the slot is
-        // exactly what moves. Falling back to every display is the visible,
-        // correctable failure; blanking the wrong monitor is not.
+        // exactly what moves. Blanking nothing is the visible, correctable
+        // failure; blanking the wrong monitor is not.
         IReadOnlyList<DisplayInfo> targets = DisplayService.ResolveTargets(
             Displays,
             DisplayTargetMode.SelectedDisplays,
             new[] { @"\\.\DISPLAY1" });
 
-        Assert.Equal(Displays, targets);
+        Assert.Empty(targets);
     }
 
     [Fact]

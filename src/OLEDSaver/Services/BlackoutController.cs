@@ -144,7 +144,12 @@ public sealed class BlackoutController : IDisposable
 
         if (targets.Count == 0)
         {
-            AppDiagnostics.Warning("Blackout requested but Windows reported no displays.");
+            // Almost always a ticked monitor that is not attached at this moment:
+            // one asleep on DisplayPort drops out of the topology entirely, as does
+            // one switched off at the panel. The blackout is skipped rather than
+            // spread onto the monitors the user left unticked.
+            AppDiagnostics.Warning(
+                $"Blackout requested but no targeted monitor is attached ({_options.DisplayTargetMode}); nothing was blanked.");
             return;
         }
 
@@ -433,6 +438,14 @@ public sealed class BlackoutController : IDisposable
                 window.CoverDisplay(target);
 
             _windows.Add(window);
+
+            // Read back rather than assumed. Placing an overlay is the one step
+            // here whose failure is invisible from inside the app — the blackout
+            // still goes up, the log still names the monitor that was asked for,
+            // and only the user sees that a different panel went black. If it ever
+            // happens again, it says so here instead of being argued about.
+            if (!window.IsCovering(target))
+                AppDiagnostics.Warning($"Blackout overlay for {target.Name} did not land on it.");
         }
     }
 
