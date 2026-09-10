@@ -30,6 +30,9 @@ public static class NativeInterop
 
     private const int SW_RESTORE = 9;
 
+    private const int GWL_STYLE = -16;
+    private const int WS_MAXIMIZE = 0x01000000;
+
     // SetThreadExecutionState flags. ES_CONTINUOUS makes the request stick until
     // it is cleared, rather than resetting the idle timer once.
     private const uint ES_CONTINUOUS = 0x80000000;
@@ -73,6 +76,12 @@ public static class NativeInterop
 
     [DllImport("user32.dll")]
     private static extern bool GetWindowRect(IntPtr hWnd, out RECT lpRect);
+
+    [DllImport("user32.dll")]
+    private static extern int GetWindowLong(IntPtr hWnd, int nIndex);
+
+    [DllImport("user32.dll")]
+    private static extern int SetWindowLong(IntPtr hWnd, int nIndex, int dwNewLong);
 
     [DllImport("user32.dll")]
     private static extern IntPtr MonitorFromWindow(IntPtr hwnd, uint dwFlags);
@@ -175,6 +184,28 @@ public static class NativeInterop
             return false;
 
         return SetWindowPos(hwnd, IntPtr.Zero, x, y, width, height, SWP_NOACTIVATE | SWP_NOZORDER);
+    }
+
+    /// <summary>
+    /// Drops the maximized flag from a window that is currently hidden.
+    ///
+    /// Windows keeps WS_MAXIMIZE on a window hidden while maximized, and WPF will
+    /// not clear it: setting WindowState back to Normal on a hidden window changes
+    /// the property and issues no window call. Windows therefore still considers
+    /// the window maximized, and the ShowWindow behind the next
+    /// WindowState = Maximized has nothing left to do — the overlay stays exactly
+    /// the size it was last placed at, which is the placement probe: a small black
+    /// square in the corner of the monitor instead of a blackout.
+    /// </summary>
+    public static void ClearMaximizedStyle(Window window)
+    {
+        IntPtr hwnd = new WindowInteropHelper(window).Handle;
+        if (hwnd == IntPtr.Zero)
+            return;
+
+        int style = GetWindowLong(hwnd, GWL_STYLE);
+        if ((style & WS_MAXIMIZE) != 0)
+            SetWindowLong(hwnd, GWL_STYLE, style & ~WS_MAXIMIZE);
     }
 
     /// <summary>

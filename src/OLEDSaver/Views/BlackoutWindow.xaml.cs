@@ -151,6 +151,13 @@ public partial class BlackoutWindow : Window
     {
         WindowState = WindowState.Normal;
 
+        // The line above is only a property change while the window is hidden, and
+        // an overlay parked here was hidden straight out of a blackout — still
+        // maximized as far as Windows is concerned. Left that way, the maximize in
+        // CoverDisplay finds nothing to do and the overlay stays the size of the
+        // placement probe.
+        NativeInterop.ClearMaximizedStyle(this);
+
         if (NativeInterop.TryPlaceHiddenWindowAtDeviceBounds(this, ParkedX, ParkedY, width, height))
             return;
 
