@@ -100,6 +100,9 @@ public sealed class BlackoutController : IDisposable
     /// </summary>
     private readonly List<BlackoutWindow> _pool = new();
 
+    /// <summary>Keeps the overlays above other topmost windows while the blackout is up.</summary>
+    private ZOrderChangeHook? _zOrderHook;
+
     private IntPtr _previousForegroundWindow;
     private bool _mouseSinkRegistered;
     private bool _displayRequested;
@@ -141,6 +144,7 @@ public sealed class BlackoutController : IDisposable
         long startedAt = Stopwatch.GetTimestamp();
 
         IReadOnlyList<DisplayInfo> targets = ResolveCurrentTargets();
+        TimeSpan resolved = Stopwatch.GetElapsedTime(startedAt);
 
         if (targets.Count == 0)
         {
@@ -158,11 +162,19 @@ public sealed class BlackoutController : IDisposable
         _previousForegroundWindow = NativeInterop.GetCurrentForegroundWindow();
 
         ShowWindows(targets);
+        TimeSpan shown = Stopwatch.GetElapsedTime(startedAt);
 
         // Taking focus is deliberate: with the screen black, keystrokes must not
         // keep landing in whatever was in front a moment ago.
         _windows[0].Activate();
         NativeInterop.ForceForeground(_windows[0]);
+        TimeSpan focused = Stopwatch.GetElapsedTime(startedAt);
+
+        // Topmost is a shared band, not a lock: whichever window claimed it last
+        // is on top, so an overlay that re-asserts itself on a timer, or a topmost
+        // dialog popping up, lands above a blackout that only claimed it once.
+        RaiseOverlays();
+        _zOrderHook = new ZOrderChangeHook(RaiseOverlays);
 
         _dismissEvaluator.Configure(_options.DismissTriggers, _options.MouseMoveThresholdPixels);
         _dismissEvaluator.Arm(DateTime.UtcNow, RawInputInterop.GetPressedVirtualKeys());
@@ -171,11 +183,14 @@ public sealed class BlackoutController : IDisposable
         ApplyDisplayRequest(_options.KeepDisplaysAwake);
 
         // The elapsed time is logged because "it feels sluggish" is otherwise
-        // unmeasurable after the fact, and the number tells a cold first blackout
-        // apart from a warm one that reused its overlays.
+        // unmeasurable after the fact. The split says which step a slow one spent
+        // it in: reading the monitors, putting the overlays up, or taking focus
+        // from the foreground application, which waits on that application.
         AppDiagnostics.Info(
             $"Blackout on ({trigger}) covering {Describe(targets)} "
-            + $"in {Stopwatch.GetElapsedTime(startedAt).TotalMilliseconds:F1} ms.");
+            + $"in {Stopwatch.GetElapsedTime(startedAt).TotalMilliseconds:F1} ms "
+            + $"(displays {resolved.TotalMilliseconds:F1}, overlays {(shown - resolved).TotalMilliseconds:F1}, "
+            + $"focus {(focused - shown).TotalMilliseconds:F1}).");
 
         ReportSlowFirstFrame(startedAt);
         ActiveChanged?.Invoke(this, true);
@@ -332,6 +347,7 @@ public sealed class BlackoutController : IDisposable
     /// </summary>
     private void ReleaseBlackoutState()
     {
+        ReleaseZOrderHook();
         _dismissEvaluator.Disarm();
         UnregisterMouseSink();
         ApplyDisplayRequest(false);
@@ -370,6 +386,23 @@ public sealed class BlackoutController : IDisposable
         HideWindows();
         ShowWindows(targets);
         _windows[0].Activate();
+        RaiseOverlays();
+    }
+
+    /// <summary>
+    /// Puts every overlay back above other topmost windows, changing neither
+    /// position, size nor focus.
+    /// </summary>
+    private void RaiseOverlays()
+    {
+        foreach (BlackoutWindow window in _windows)
+            NativeInterop.RaiseAboveTopmostWindows(window);
+    }
+
+    private void ReleaseZOrderHook()
+    {
+        _zOrderHook?.Dispose();
+        _zOrderHook = null;
     }
 
     private bool IsAlreadyCovered(DisplayInfo target) =>
@@ -630,6 +663,7 @@ public sealed class BlackoutController : IDisposable
 
         _disposed = true;
 
+        ReleaseZOrderHook();
         _dismissEvaluator.Disarm();
         UnregisterMouseSink();
         ApplyDisplayRequest(false);
