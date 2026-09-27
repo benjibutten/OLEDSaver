@@ -83,6 +83,10 @@ jobs:
       - name: Publish app
         shell: pwsh
         run: |
+          # WPF's native libraries ship beside the exe rather than bundled into it. A
+          # bundled native library is extracted to %TEMP% at first launch and loaded
+          # from there, and an app started as administrator from Program Files must
+          # not load a DLL any non-elevated process can overwrite.
           $publishDir = Join-Path $PWD "artifacts/publish/$env:RUNTIME_ID"
 
           if (Test-Path $publishDir)
@@ -99,7 +103,7 @@ jobs:
             -p:DebugType=None `
             -p:DebugSymbols=false `
             -p:PublishSingleFile=true `
-            -p:IncludeNativeLibrariesForSelfExtract=true `
+            -p:IncludeNativeLibrariesForSelfExtract=false `
             -p:EnableCompressionInSingleFile=false `
             -p:PublishReadyToRun=true `
             -p:Version=${{ steps.meta.outputs.version }} `

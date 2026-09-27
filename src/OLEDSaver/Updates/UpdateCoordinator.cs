@@ -25,7 +25,7 @@ internal static class UpdateCoordinator
         // A local build carries the placeholder 1.0.0.0, so every release looks newer
         // than it. Installing a release over a working copy of the source tree is not
         // what anyone asked for.
-        if (currentVersion is null || currentVersion.Major < 2000)
+        if (currentVersion is null || !AppVersion.IsRelease)
         {
             if (manual)
             {

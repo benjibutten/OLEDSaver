@@ -27,6 +27,8 @@ public static class NativeInterop
     private const uint SWP_NOACTIVATE = 0x0010;
     private const uint SWP_SHOWWINDOW = 0x0040;
     private const uint SWP_NOZORDER = 0x0004;
+    private const uint SWP_NOSIZE = 0x0001;
+    private const uint SWP_NOMOVE = 0x0002;
 
     private const int SW_RESTORE = 9;
 
@@ -165,6 +167,17 @@ public static class NativeInterop
             return;
 
         SetWindowPos(hwnd, HWND_TOPMOST, x, y, width, height, SWP_SHOWWINDOW | SWP_NOACTIVATE);
+    }
+
+    /// <summary>
+    /// Puts a window at the top of the topmost band without moving, sizing or
+    /// activating it.
+    /// </summary>
+    public static void RaiseAboveTopmostWindows(Window window)
+    {
+        IntPtr hwnd = new WindowInteropHelper(window).Handle;
+        if (hwnd != IntPtr.Zero)
+            SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
     }
 
     /// <summary>

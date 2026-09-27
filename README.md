@@ -31,14 +31,23 @@ Built with .NET 10 and WPF, and modelled on the input and startup handling in
   movement optionally, Escape and the hotkey always.
 - **Idle blackout.** Optionally blanks the screen after N minutes with no input,
   and holds back while a full-screen app is in front so it never interrupts a film.
-- **Start with Windows.** A per-user `HKCU\...\Run` entry, no elevation, starting
-  straight into the tray.
+- **Start with Windows.** Straight into the tray at logon — as administrator when
+  installed under Program Files, so the hotkey also works over elevated programs
+  and games. See [Running as administrator](#running-as-administrator).
 - **Scriptable.** `OLEDSaver.exe --toggle` blanks the screen or takes it back, and
   hands the request to the instance already running — so a Stream Deck button, a
   shortcut or another launcher can drive it. `--blackout` is the switch-on-only
   variant for when you never want it turning the screen back on.
 
 ## Getting started
+
+Download the zip from the latest release, extract it, and open `OLEDSaver.exe`. It
+offers to install itself: say yes, approve the UAC prompt, and it moves into
+`C:\Program Files\OLEDSaver`, starts from there as administrator and turns on
+**Start with Windows**. Say no to run it from where it is instead. Either way, the
+DLLs in the zip belong beside the exe.
+
+To build from source:
 
 ```powershell
 dotnet build OLEDSaver.slnx
@@ -81,6 +90,31 @@ under **Power**.
 **Notifications still light up.** A toast that arrives while the screen is black
 will draw itself on top. Windows' focus assist / do-not-disturb is the tool for
 that, and this app deliberately does not touch it.
+
+## Running as administrator
+
+Windows keeps a program without administrator rights from seeing input meant for
+one that has them. While a game or tool running as administrator has focus, a
+non-elevated OLED Saver may not see the hotkey.
+
+Accepting the install offer on first launch sets this up: it starts as
+administrator at every logon, without a UAC prompt. To do it by hand, extract the
+release into `C:\Program Files\OLEDSaver` and run `OLEDSaver.exe` as
+administrator once, with **Start with Windows** ticked.
+
+That registers a Task Scheduler task, *OLEDSaver (your user name)*, and removes
+the ordinary startup entry. The settings window says which of the two is in use.
+
+The task is only created for an exe that nothing without administrator rights can
+change — not the file, not its folder, and not by moving a folder above it.
+Anywhere else, a program running as you could swap the exe and be started as
+administrator at the next logon. `C:\Program Files` qualifies; a folder made
+directly under `C:\`, such as `C:\Tools`, does not, since Windows lets every user
+modify those. From there the app keeps using the ordinary startup entry.
+
+`--toggle` and `--blackout` keep working from non-elevated launchers such as a
+Stream Deck. To stop starting as administrator, untick **Start with Windows** in a
+copy running as administrator, or delete the task in Task Scheduler.
 
 ## Layout
 

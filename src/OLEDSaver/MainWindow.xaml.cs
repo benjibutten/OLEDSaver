@@ -29,6 +29,7 @@ public partial class MainWindow : Window
     private readonly HotkeyRegistrationController _hotkeyController = new();
     private readonly RawInputHotkeyMatcher _rawInputHotkeyMatcher = new();
     private readonly StartupRegistrySyncService _startupRegistrySyncService = new();
+    private readonly StartupTaskService _startupTaskService = new();
     private readonly BlackoutController _blackoutController;
     private readonly IdleBlackoutWatcher _idleBlackoutWatcher;
     private readonly bool _startHiddenInTray;
@@ -269,6 +270,9 @@ public partial class MainWindow : Window
 
     // ----------------------------------------------------------------- actions
 
+    /// <summary>Turns on "Start with Windows", registering the startup this copy qualifies for.</summary>
+    public void EnableStartWithWindows() => _viewModel.StartWithWindows = true;
+
     /// <summary>Blanks the screen on request from another instance (<c>--blackout</c>).</summary>
     public void ShowBlackoutFromCommandLine() => _blackoutController.Show(BlackoutTrigger.CommandLine);
 
@@ -326,17 +330,69 @@ public partial class MainWindow : Window
             _trayIcon.Text = isActive ? "OLED Saver — blacked out" : "OLED Saver";
     }
 
+    /// <summary>
+    /// Mirrors "Start with Windows" into whichever of the two startup mechanisms
+    /// applies, and never both: an app started twice at logon has its second copy
+    /// hand over to the first, which opens the settings window.
+    /// </summary>
     private void SyncStartWithWindows()
     {
+        string? exePath = Environment.ProcessPath;
+        if (string.IsNullOrWhiteSpace(exePath))
+            return;
+
         try
         {
-            _startupRegistrySyncService.Sync(_viewModel.StartWithWindows, Environment.ProcessPath);
+            // Starting elevated with no prompt is only safe for an exe that nothing
+            // without administrator rights can swap out. From anywhere else it would
+            // hand those rights to whoever replaced the file.
+            if (Elevation.IsElevated && Elevation.IsProtectedFromNonAdministrators(exePath))
+            {
+                _startupTaskService.Sync(_viewModel.StartWithWindows, exePath);
+                _startupRegistrySyncService.Sync(false, exePath);
+                StartupHintText.Text = _viewModel.StartWithWindows ? StartupHintElevated : StartupHintOff;
+                return;
+            }
+
+            if (Elevation.IsElevated)
+            {
+                // Elevated, but from a folder that is not protected: the task, if an
+                // earlier copy registered one, is removed rather than left pointing at
+                // an exe this copy has replaced as the one that starts at logon.
+                _startupTaskService.Sync(false, exePath);
+            }
+            else if (_startupTaskService.Exists())
+            {
+                // Set up by an elevated copy; only an elevated one may change it.
+                _startupRegistrySyncService.Sync(false, exePath);
+                StartupHintText.Text = _viewModel.StartWithWindows ? StartupHintTaskOwnedElsewhere : StartupHintTaskPendingRemoval;
+                return;
+            }
+
+            _startupRegistrySyncService.Sync(_viewModel.StartWithWindows, exePath);
+            StartupHintText.Text = _viewModel.StartWithWindows ? StartupHintNotElevated : StartupHintOff;
         }
         catch (Exception ex)
         {
-            AppDiagnostics.Warning("Failed to synchronize the Start with Windows registry setting.", ex);
+            AppDiagnostics.Warning("Failed to synchronize the Start with Windows setting.", ex);
         }
     }
+
+    private const string StartupHintElevated =
+        "Starts into the tray at logon as administrator, so the hotkey also works while an elevated program or game has focus.";
+
+    private const string StartupHintNotElevated =
+        "Starts into the tray at logon. While a program running as administrator has focus, the hotkey may not reach OLED Saver: "
+        + "to start it as administrator instead, install it under Program Files and run it as administrator once.";
+
+    private const string StartupHintTaskOwnedElsewhere =
+        "Starts as administrator at logon. Run OLED Saver as administrator to change this.";
+
+    private const string StartupHintTaskPendingRemoval =
+        "Still starts as administrator at logon until OLED Saver runs as administrator, which removes the startup task.";
+
+    private const string StartupHintOff =
+        "Starts straight into the tray at logon, ready for the hotkey.";
 
     // -------------------------------------------------------------- tray / show
 
