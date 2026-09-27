@@ -1,3 +1,5 @@
+using System.Security.AccessControl;
+using System.Security.Principal;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
@@ -72,7 +74,21 @@ public partial class App : Application
         bool toggleOnStart = HasArgument(e.Args, ToggleArgument);
         bool blackoutOnStart = HasArgument(e.Args, BlackoutArgument) || toggleOnStart;
 
-        _singleInstanceMutex = new Mutex(initiallyOwned: true, SingleInstanceMutexName, out bool isFirstInstance);
+        bool isFirstInstance;
+        try
+        {
+            _singleInstanceMutex = MutexAcl.Create(initiallyOwned: true, SingleInstanceMutexName, out isFirstInstance, CreateMutexSecurity());
+        }
+        catch (UnauthorizedAccessException)
+        {
+            // Held by an elevated instance whose mutex does not grant this account
+            // access. It is still running, so this launch must not become a second
+            // instance.
+            AppDiagnostics.Warning("Another OLED Saver is running as administrator and cannot be reached; exiting.");
+            Shutdown();
+            return;
+        }
+
         _ownsSingleInstanceMutex = isFirstInstance;
 
         if (!isFirstInstance)
@@ -192,9 +208,34 @@ public partial class App : Application
         base.OnExit(e);
     }
 
+    // The instance that creates these may run as administrator, and then Windows
+    // gives its named objects a default permission that shuts every non-elevated
+    // process out. A Stream Deck button or a shortcut launching --toggle runs without
+    // elevation, so each object grants this account access explicitly.
+    private static SecurityIdentifier CurrentUser()
+    {
+        using WindowsIdentity identity = WindowsIdentity.GetCurrent();
+        return identity.User!;
+    }
+
+    private static MutexSecurity CreateMutexSecurity()
+    {
+        var security = new MutexSecurity();
+        security.AddAccessRule(new MutexAccessRule(CurrentUser(), MutexRights.FullControl, AccessControlType.Allow));
+        return security;
+    }
+
+    private static EventWaitHandleSecurity CreateSignalSecurity()
+    {
+        var security = new EventWaitHandleSecurity();
+        security.AddAccessRule(new EventWaitHandleAccessRule(CurrentUser(), EventWaitHandleRights.FullControl, AccessControlType.Allow));
+        return security;
+    }
+
     private EventWaitHandle CreateSignal(string name, Action<App> handler, out RegisteredWaitHandle? waitHandle)
     {
-        var signal = new EventWaitHandle(initialState: false, mode: EventResetMode.AutoReset, name: name);
+        EventWaitHandle signal = EventWaitHandleAcl.Create(
+            initialState: false, EventResetMode.AutoReset, name, out _, CreateSignalSecurity());
 
         waitHandle = ThreadPool.RegisterWaitForSingleObject(
             signal,
@@ -220,6 +261,10 @@ public partial class App : Application
         catch (WaitHandleCannotBeOpenedException)
         {
             // The first instance is still starting and has not created its signals yet.
+        }
+        catch (UnauthorizedAccessException)
+        {
+            AppDiagnostics.Warning("Another OLED Saver is running as administrator and cannot be reached.");
         }
     }
 
