@@ -270,6 +270,9 @@ public partial class MainWindow : Window
 
     // ----------------------------------------------------------------- actions
 
+    /// <summary>Turns on "Start with Windows", registering the startup this copy qualifies for.</summary>
+    public void EnableStartWithWindows() => _viewModel.StartWithWindows = true;
+
     /// <summary>Blanks the screen on request from another instance (<c>--blackout</c>).</summary>
     public void ShowBlackoutFromCommandLine() => _blackoutController.Show(BlackoutTrigger.CommandLine);
 

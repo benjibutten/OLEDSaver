@@ -62,6 +62,16 @@ public partial class App : Application
             return;
         }
 
+        // Also ahead of the mutex: the copy that launched the installer holds it until
+        // it exits, and the installer waits for that.
+        if (SelfInstaller.IsInstallMode(e.Args))
+        {
+            base.OnStartup(e);
+            SelfInstaller.Run(e.Args);
+            Shutdown();
+            return;
+        }
+
         // Set when this process is the freshly installed build: the updater's temp
         // folder is still on disk and nothing else will remove it.
         UpdateInstaller.ScheduleCleanup(e.Args);
@@ -105,6 +115,19 @@ public partial class App : Application
             return;
         }
 
+        // Offered only when the user opened the exe themselves: a logon start or a
+        // Stream Deck --toggle is no moment for a question.
+        bool justInstalled = HasArgument(e.Args, SelfInstaller.InstalledArgument);
+        if (!startHiddenInTray
+            && !blackoutOnStart
+            && !justInstalled
+            && SelfInstaller.ShouldOffer(Environment.ProcessPath)
+            && SelfInstaller.OfferInstall())
+        {
+            Shutdown();
+            return;
+        }
+
         _activateEvent = CreateSignal(ActivateExistingInstanceEventName, static app => app.ActivateMainWindow(), out _activateWaitHandle);
         _blackoutEvent = CreateSignal(BlackoutExistingInstanceEventName, static app => app.BlackoutFromSignal(), out _blackoutWaitHandle);
         _toggleEvent = CreateSignal(ToggleExistingInstanceEventName, static app => app.ToggleFromSignal(), out _toggleWaitHandle);
@@ -113,6 +136,9 @@ public partial class App : Application
 
         var mainWindow = new MainWindow(startHiddenInTray);
         MainWindow = mainWindow;
+
+        if (justInstalled)
+            mainWindow.EnableStartWithWindows();
 
         if (startHiddenInTray)
         {

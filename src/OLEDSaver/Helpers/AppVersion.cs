@@ -11,6 +11,12 @@ public static class AppVersion
     /// </summary>
     public static Version? Current { get; } = typeof(AppVersion).Assembly.GetName().Version;
 
+    /// <summary>
+    /// True for a build stamped by the release workflow (a date-based version), false
+    /// for a local build carrying the 1.0.0.0 placeholder.
+    /// </summary>
+    public static bool IsRelease => Current is { Major: >= 2000 };
+
     /// <summary>Version as built, without the "+&lt;commit&gt;" suffix the SDK appends.</summary>
     public static string DisplayText { get; } = Resolve();
 
