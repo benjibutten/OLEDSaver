@@ -3,6 +3,7 @@ using System.IO;
 using System.Net.Http;
 using System.Security.Cryptography;
 using System.Text.Json;
+using OLEDSaver.Helpers;
 
 namespace OLEDSaver.Updates;
 
@@ -98,7 +99,16 @@ internal sealed class GitHubUpdateService
         IProgress<UpdateProgress>? progress = null,
         CancellationToken cancellationToken = default)
     {
-        string workDirectory = Path.Combine(Path.GetTempPath(), $"OLEDSaver-update-{Guid.NewGuid():N}");
+        string executablePath = Environment.ProcessPath
+            ?? throw new InvalidOperationException("Could not determine where the app's exe lives.");
+        string installDirectory = AppContext.BaseDirectory.TrimEnd(Path.DirectorySeparatorChar);
+
+        // The updater is a copy of this exe and inherits its rights. Run from %TEMP%
+        // while this process is elevated, it would be an elevated program that any
+        // non-elevated one can replace or rename out from under it before it starts,
+        // so it is staged inside the install folder instead.
+        string workParent = Elevation.IsElevated ? installDirectory : Path.GetTempPath();
+        string workDirectory = Path.Combine(workParent, $"{UpdateInstaller.WorkDirectoryPrefix}{Guid.NewGuid():N}");
         Directory.CreateDirectory(workDirectory);
         string zipPath = Path.Combine(workDirectory, "update.zip");
         string updaterPath = Path.Combine(workDirectory, "OLEDSaver.Update.exe");
@@ -116,10 +126,6 @@ internal sealed class GitHubUpdateService
                 await VerifySha256Async(zipStream, expectedHash, cancellationToken);
             }
 
-            string executablePath = Environment.ProcessPath
-                ?? throw new InvalidOperationException("Could not determine where the app's exe lives.");
-            string installDirectory = AppContext.BaseDirectory.TrimEnd(Path.DirectorySeparatorChar);
-
             // Installs under Program Files need an elevated updater. Asking for it only
             // when the probe says the folder is read-only keeps the common case (a folder
             // in the user's profile, or a winget install) free of UAC prompts.
@@ -127,6 +133,11 @@ internal sealed class GitHubUpdateService
 
             progress?.Report(new UpdateProgress("Preparing the installation…"));
             File.Copy(executablePath, updaterPath);
+
+            // WPF's native libraries ship beside the exe rather than inside it, and the
+            // copy cannot start without them.
+            foreach (string library in Directory.EnumerateFiles(installDirectory, "*.dll"))
+                File.Copy(library, Path.Combine(workDirectory, Path.GetFileName(library)));
 
             var startInfo = new ProcessStartInfo(updaterPath)
             {

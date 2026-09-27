@@ -34,6 +34,9 @@ internal static class UpdateInstaller
     /// </summary>
     public const string RestartMinimizedArgument = "--restart-minimized";
 
+    /// <summary>Names every update working folder, so only folders this app created are ever deleted.</summary>
+    public const string WorkDirectoryPrefix = "OLEDSaver-update-";
+
     private const int FileOperationAttempts = 20;
     private static readonly TimeSpan FileOperationDelay = TimeSpan.FromMilliseconds(250);
 
@@ -48,9 +51,9 @@ internal static class UpdateInstaller
         try
         {
             int processId = int.Parse(GetRequiredArgument(args, "--process-id"));
-            string workDirectory = GetValidatedWorkDirectory(Path.Combine(
-                GetRequiredArgument(args, "--work-directory"),
-                "update.zip"));
+            string workDirectory = GetValidatedWorkDirectory(
+                Path.Combine(GetRequiredArgument(args, "--work-directory"), "update.zip"),
+                AppContext.BaseDirectory);
 
             await Task.Run(() => WaitForProcessToExit(processId));
             await DeleteWorkDirectoryAsync(workDirectory);
@@ -109,7 +112,7 @@ internal static class UpdateInstaller
         string expectedHash = GetRequiredArgument(args, "--expected-hash");
         string installDirectory = Path.GetFullPath(GetRequiredArgument(args, "--install-directory"));
         string executablePath = Path.GetFullPath(GetRequiredArgument(args, "--executable-path"));
-        string workDirectory = GetValidatedWorkDirectory(zipPath);
+        string workDirectory = GetValidatedWorkDirectory(zipPath, installDirectory);
 
         progress.Report(new UpdateProgress("Waiting for OLED Saver to close…"));
         WaitForProcessToExit(processId);
@@ -333,28 +336,31 @@ internal static class UpdateInstaller
 
     /// <summary>
     /// The arguments arrive on a command line, and the install step deletes and
-    /// overwrites whatever they point at. Only a folder this app itself created
-    /// directly under %TEMP% is accepted.
+    /// overwrites whatever they point at. Only a folder this app itself created is
+    /// accepted: one named with <see cref="WorkDirectoryPrefix"/>, directly under
+    /// %TEMP% or directly under <paramref name="installDirectory"/>.
     /// </summary>
-    private static string GetValidatedWorkDirectory(string zipPath)
+    private static string GetValidatedWorkDirectory(string zipPath, string installDirectory)
     {
         string workDirectory = Path.GetDirectoryName(Path.GetFullPath(zipPath))
             ?? throw new InvalidOperationException("The update's working folder is not valid.");
-        string tempDirectory = Path.GetFullPath(Path.GetTempPath())
-            .TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
-        string expectedPrefix = Path.Combine(tempDirectory, "OLEDSaver-update-");
 
-        if (!workDirectory.StartsWith(expectedPrefix, StringComparison.OrdinalIgnoreCase)
-            || !string.Equals(
-                Path.GetDirectoryName(workDirectory)?.TrimEnd(Path.DirectorySeparatorChar),
-                tempDirectory.TrimEnd(Path.DirectorySeparatorChar),
-                StringComparison.OrdinalIgnoreCase))
-        {
+        string? parent = Path.GetDirectoryName(workDirectory);
+        bool trustedName = Path.GetFileName(workDirectory).StartsWith(WorkDirectoryPrefix, StringComparison.OrdinalIgnoreCase);
+        bool trustedParent = IsSameDirectory(parent, Path.GetTempPath()) || IsSameDirectory(parent, installDirectory);
+
+        if (!trustedName || !trustedParent)
             throw new InvalidOperationException("The update's working folder cannot be trusted.");
-        }
 
         return workDirectory;
     }
+
+    private static bool IsSameDirectory(string? left, string right) =>
+        left is not null
+        && string.Equals(
+            Path.GetFullPath(left).TrimEnd(Path.DirectorySeparatorChar),
+            Path.GetFullPath(right).TrimEnd(Path.DirectorySeparatorChar),
+            StringComparison.OrdinalIgnoreCase);
 
     /// <summary>
     /// The failed updater cannot delete the folder it is itself running from, so the
@@ -366,7 +372,8 @@ internal static class UpdateInstaller
         {
             string executablePath = Path.GetFullPath(GetRequiredArgument(args, "--executable-path"));
             string zipPath = Path.GetFullPath(GetRequiredArgument(args, "--zip-path"));
-            string workDirectory = GetValidatedWorkDirectory(zipPath);
+            string installDirectory = Path.GetFullPath(GetRequiredArgument(args, "--install-directory"));
+            string workDirectory = GetValidatedWorkDirectory(zipPath, installDirectory);
 
             var cleanup = new ProcessStartInfo(executablePath)
             {
@@ -419,7 +426,7 @@ internal static class UpdateInstaller
         string workDirectory;
         try
         {
-            workDirectory = GetValidatedWorkDirectory(Path.Combine(args[index + 1], "update.zip"));
+            workDirectory = GetValidatedWorkDirectory(Path.Combine(args[index + 1], "update.zip"), AppContext.BaseDirectory);
         }
         catch
         {
