@@ -4,7 +4,7 @@ namespace OLEDSaver.Helpers;
 
 /// <summary>
 /// Calls back whenever another process shows a window, takes the foreground or
-/// changes the z-order, until disposed.
+/// changes the order of windows or of objects inside one, until disposed.
 ///
 /// The callback runs on the thread that created the hook, which must pump
 /// messages. Events raised by this process are not reported, so the callback can
@@ -14,10 +14,12 @@ public sealed class ZOrderChangeHook : IDisposable
 {
     private const uint EVENT_SYSTEM_FOREGROUND = 0x0003;
     private const uint EVENT_OBJECT_SHOW = 0x8002;
+    private const uint EVENT_OBJECT_HIDE = 0x8003;
     private const uint EVENT_OBJECT_REORDER = 0x8004;
     private const uint WINEVENT_OUTOFCONTEXT = 0x0000;
     private const uint WINEVENT_SKIPOWNPROCESS = 0x0002;
     private const int OBJID_WINDOW = 0;
+    private const int CHILDID_SELF = 0;
 
     private readonly Action _onChange;
 
@@ -44,9 +46,14 @@ public sealed class ZOrderChangeHook : IDisposable
     private void OnWinEvent(
         IntPtr hook, uint eventType, IntPtr hwnd, int idObject, int idChild, uint eventThread, uint eventTime)
     {
-        // Carets, cursors and other non-window objects raise SHOW constantly and
-        // cannot cover anything.
-        if (eventType == EVENT_OBJECT_SHOW && idObject != OBJID_WINDOW)
+        // The hooked range includes HIDE, which cannot put anything on top.
+        if (eventType == EVENT_OBJECT_HIDE)
+            return;
+
+        // Carets, cursors and other objects inside a window raise SHOW constantly and
+        // cannot cover anything. REORDER is deliberately left unfiltered: a window
+        // re-asserting HWND_TOPMOST reports it with OBJID_CLIENT.
+        if (eventType == EVENT_OBJECT_SHOW && (idObject != OBJID_WINDOW || idChild != CHILDID_SELF))
             return;
 
         _onChange();
